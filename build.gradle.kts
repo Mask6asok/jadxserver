@@ -59,6 +59,10 @@ application {
     mainClass.set("jadx.server.MainKt")
     applicationDefaultJvmArgs = listOf(
         "-Xms256M",
+        "-XX:+UseG1GC",
+        "-XX:MaxGCPauseMillis=200",
+        "-XX:G1PeriodicGCInterval=30000",
+        "-XX:InitiatingHeapOccupancyPercent=45",
     )
 }
 

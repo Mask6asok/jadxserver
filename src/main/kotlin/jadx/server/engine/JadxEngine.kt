@@ -69,6 +69,7 @@ class JadxEngine : DecompilerEngine {
     )
 
     override fun open(file: Path, options: EngineOptions): EngineInstance {
+        val sourceDir = options.sourceDir
         val args = JadxArgs().apply {
             inputFiles = mutableListOf(file.toFile())
             threadsCount = options.threads
@@ -76,6 +77,9 @@ class JadxEngine : DecompilerEngine {
             isSkipResources = options.skipResources
             codeCache = NoOpCodeCache.INSTANCE
             usageInfoCache = EmptyUsageInfoCache()
+            if (sourceDir != null) {
+                outDir = sourceDir.toFile()
+            }
             if (options.classFilter != null) {
                 val filterPattern = options.classFilter
                 classFilter = java.util.function.Predicate { it.contains(filterPattern) }
@@ -89,7 +93,6 @@ class JadxEngine : DecompilerEngine {
         val resourceList = decompiler.resources
         val apkMetadata = extractMetadata(resourceList, classMap)
 
-        val sourceDir = options.sourceDir
         if (sourceDir != null) {
             val srcOutDir = sourceDir.resolve("sources").toFile()
             if (!srcOutDir.exists() || srcOutDir.listFiles()?.isEmpty() != false) {
@@ -120,6 +123,9 @@ class JadxEngine : DecompilerEngine {
     override fun close(instance: EngineInstance) {
         val apk = instance.state as? DecompiledApk
         apk?.close()
+        // Prompt GC after closing engine instance — jadx produces massive
+        // temporary objects during decompilation that G1GC may not reclaim promptly.
+        System.gc()
     }
 
     override fun health(instance: EngineInstance): InstanceHealth {
