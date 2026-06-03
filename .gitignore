@@ -5,3 +5,8 @@
 app-debug
 build
 uploads
+bin
+.vscode
+run.sh
+build.sh
+.DS_Store
