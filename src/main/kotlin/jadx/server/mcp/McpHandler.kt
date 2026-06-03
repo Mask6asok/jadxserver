@@ -44,7 +44,7 @@ class McpHandler(private val state: ServerState) {
             val tool = Tool(def.name, schema, description = def.description)
             val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { conn, req ->
                 val args = req.arguments ?: JsonObject(emptyMap())
-                val sessionId = extractSessionId(req)
+                val sessionId = extractSessionId(conn)
                 val result = toolRegistry.executeServer(name, args, sessionId, state)
                 toCallToolResult(result)
             }
@@ -63,7 +63,7 @@ class McpHandler(private val state: ServerState) {
                 val fileHash = args["file_hash"]?.jsonPrimitive?.content
                     ?: throw IllegalArgumentException("Missing required parameter: file_hash")
                 val background = args.getBoolean("background", false)
-                val sessionId = extractSessionId(req)
+                val sessionId = extractSessionId(conn)
                 if (background) {
                     handleBackgroundAnalysis(name, fileHash, args, sessionId)
                 } else {
@@ -160,7 +160,9 @@ class McpHandler(private val state: ServerState) {
         })
     }
 
-    private fun extractSessionId(request: CallToolRequest): String = "default"
+    private fun extractSessionId(conn: ClientConnection): String {
+        return try { conn.sessionId } catch (_: Exception) { "default" }
+    }
 
     private fun buildToolSchema(params: List<ToolParam>): ToolSchema {
         val properties = buildJsonObject {
