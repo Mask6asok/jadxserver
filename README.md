@@ -161,13 +161,12 @@ build/install/jadx-server/bin/jadx-server --stdio
 
 #### Claude Code (stdio)
 
-Add to `claude_desktop_config.json`:
+Add to `~/.claude.json`:
 
 ```json
 {
   "mcpServers": {
     "jadx-server": {
-      "type": "stdio",
       "command": "java",
       "args": ["-jar", "/path/to/jadx-server-0.1.0-all.jar", "--stdio"]
     }
@@ -187,7 +186,7 @@ java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
 {
   "mcpServers": {
     "jadx-server": {
-      "type": "http",
+      "transport": "http"
       "url": "http://127.0.0.1:8080/mcp"
     }
   }
@@ -202,9 +201,8 @@ Edit `~/.config/opencode/opencode.json`:
 {
   "mcpServers": {
     "jadx-server": {
-      "type": "stdio",
-      "command": "java",
-      "args": ["-jar", "/path/to/jadx-server-0.1.0-all.jar", "--stdio"]
+      "type": "local",
+      "command": ["java", "-jar", "/path/to/jadx-server-0.1.0-all.jar", "--stdio"]
     }
   }
 }
@@ -218,9 +216,9 @@ java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
 
 ```json
 {
-  "mcpServers": {
+  "mcp": {
     "jadx-server": {
-      "type": "http",
+      "type": "remote",
       "url": "http://127.0.0.1:8080/mcp"
     }
   }
