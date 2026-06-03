@@ -39,6 +39,8 @@ class IdleEvictor(
                         logger.warn("Error closing evicted instance {}: {}", instance.instanceId, e.message)
                     }
                 }
+                // Batch eviction frees large jadx heaps; prompt GC to return memory to OS
+                System.gc()
             }
         } catch (e: Exception) {
             logger.error("Error during eviction cycle: {}", e.message, e)
