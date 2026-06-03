@@ -80,6 +80,8 @@ fun main(args: Array<String>) {
     }
 }
 
+private const val MAX_UPLOAD_BYTES = 500L * 1024 * 1024 // 500MB
+
 fun startHttpServer(config: ServerConfig, state: ServerState) {
     val logger = LoggerFactory.getLogger("jadx.server.HttpServer")
     val parts = config.listen.split(":")
@@ -101,7 +103,7 @@ fun startHttpServer(config: ServerConfig, state: ServerState) {
         this.mcpStreamableHttp { server }
         routing {
             post("/upload") {
-                val multipart = call.receiveMultipart()
+                val multipart = call.receiveMultipart(MAX_UPLOAD_BYTES)
                 var fileEntry: jadx.server.server.FileEntry? = null
                 while (true) {
                     val part = multipart.readPart() ?: break
