@@ -157,6 +157,76 @@ build/install/jadx-server/bin/jadx-server --xref-mode jadx
 build/install/jadx-server/bin/jadx-server --stdio
 ```
 
+### MCP Client Configuration
+
+#### Claude Code (stdio)
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "jadx-server": {
+      "type": "stdio",
+      "command": "java",
+      "args": ["-jar", "/path/to/jadx-server-0.1.0-all.jar", "--stdio"]
+    }
+  }
+}
+```
+
+#### Claude Code (HTTP)
+
+Start jadx-server in a terminal first, then add to config:
+
+```bash
+java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
+```
+
+```json
+{
+  "mcpServers": {
+    "jadx-server": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
+}
+```
+
+#### OpenCode (stdio)
+
+Edit `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcpServers": {
+    "jadx-server": {
+      "type": "stdio",
+      "command": "java",
+      "args": ["-jar", "/path/to/jadx-server-0.1.0-all.jar", "--stdio"]
+    }
+  }
+}
+```
+
+#### OpenCode (HTTP)
+
+```bash
+java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
+```
+
+```json
+{
+  "mcpServers": {
+    "jadx-server": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
+}
+```
+
 ### CLI Options
 
 | Flag | Default | Description |
