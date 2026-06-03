@@ -17,6 +17,7 @@ import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import jadx.server.config.ServerConfig
 import jadx.server.config.TransportMode
+import jadx.server.config.XrefMode
 import jadx.server.mcp.McpHandler
 import jadx.server.server.ServerState
 import kotlinx.coroutines.runBlocking
@@ -30,12 +31,19 @@ import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.time.Duration
 
 fun main(args: Array<String>) {
     var transportMode = TransportMode.HTTP
     var listenAddr = "127.0.0.1:8080"
     var maxInst = 0
     var upload = "./uploads"
+    var xrefMode = XrefMode.JADX
+    var maxPerFile = 4
+    var idleTimeout = Duration.ofMinutes(5)
+    var cleanupInterval = Duration.ofSeconds(10)
+    var maxCachedApks = 10
+    var toolTimeout = Duration.ofMinutes(5)
 
     var i = 0
     while (i < args.size) {
@@ -45,6 +53,13 @@ fun main(args: Array<String>) {
             "--listen" -> { if (i+1 < args.size) listenAddr = args[i+1]; i++ }
             "--max-instances", "-m" -> { if (i+1 < args.size) maxInst = args[i+1].toIntOrNull() ?: 0; i++ }
             "--upload-dir" -> { if (i+1 < args.size) upload = args[i+1]; i++ }
+            "--xref-mode" -> { if (i+1 < args.size) xrefMode = XrefMode.valueOf(args[i+1].uppercase()); i++ }
+            "--max-per-file" -> { if (i+1 < args.size) maxPerFile = args[i+1].toIntOrNull() ?: 4; i++ }
+            "--idle-timeout" -> { if (i+1 < args.size) idleTimeout = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 300); i++ }
+            "--cleanup-interval" -> { if (i+1 < args.size) cleanupInterval = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 10); i++ }
+            "--max-cached-apks" -> { if (i+1 < args.size) maxCachedApks = args[i+1].toIntOrNull() ?: 10; i++ }
+            "--tool-timeout" -> { if (i+1 < args.size) toolTimeout = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 300); i++ }
+            "--help", "-h" -> { printHelp(); return }
         }
         i++
     }
@@ -53,7 +68,13 @@ fun main(args: Array<String>) {
         transport = transportMode,
         listen = listenAddr,
         maxInstances = maxInst,
+        maxPerFile = maxPerFile,
+        idleTimeout = idleTimeout,
+        cleanupInterval = cleanupInterval,
+        maxCachedApks = maxCachedApks,
         uploadDir = Path.of(upload),
+        toolTimeout = toolTimeout,
+        xrefMode = xrefMode,
     )
     val state = ServerState(config)
     val handler = McpHandler(state)
@@ -135,4 +156,32 @@ fun startHttpServer(config: ServerConfig, state: ServerState) {
             }
         }
     }.start(wait = true)
+}
+
+fun printHelp() {
+    println("""
+        jadx-server — MCP server for Android APK decompilation
+
+        Usage: jadx-server [options]
+
+        Options:
+          --stdio                    Use stdio transport (default: HTTP)
+          --transport <mode>         Transport mode: http, stdio (default: http)
+          --listen <host:port>       HTTP listen address (default: 127.0.0.1:8080)
+          --max-instances, -m <n>    Max engine instances, 0=auto (default: 0)
+          --max-per-file <n>         Max concurrent instances per file (default: 4)
+          --idle-timeout <s>         Idle engine eviction timeout in seconds (default: 300)
+          --cleanup-interval <s>     Eviction check interval in seconds (default: 10)
+          --max-cached-apks <n>      Max cached APK entries (default: 10)
+          --upload-dir <path>        Upload directory (default: ./uploads)
+          --tool-timeout <s>         Tool execution timeout in seconds (default: 300)
+          --xref-mode <mode>         Cross-reference mode: text, jadx (default: jadx)
+          --help, -h                 Show this help
+
+        Examples:
+          jadx-server                                          # default HTTP on :8080
+          jadx-server --xref-mode jadx                         # precise bytecode xref
+          jadx-server --listen 0.0.0.0:9090 --max-instances 4  # public, 4 workers
+          jadx-server --stdio                                  # MCP stdio mode
+    """.trimIndent())
 }

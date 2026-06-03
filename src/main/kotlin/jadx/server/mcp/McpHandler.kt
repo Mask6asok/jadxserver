@@ -86,7 +86,7 @@ class McpHandler(private val state: ServerState) {
         val sourceDir = state.fileIndex.resolve(fileHash)?.let { entry ->
             state.config.uploadDir.resolve("binary").resolve(entry.md5).resolve("cache")
         }
-        val engineOptions = EngineOptions(sourceDir = sourceDir)
+        val engineOptions = EngineOptions(sourceDir = sourceDir, xrefMode = state.config.xrefMode)
 
         val acquireResult = acquireWithRetry(sessionId, fileHash, engineOptions)
             ?: return toCallToolResult(ToolResult.error(-32002, "All workers busy after retrying, try again later"))

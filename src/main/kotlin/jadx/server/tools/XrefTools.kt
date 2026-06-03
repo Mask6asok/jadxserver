@@ -28,8 +28,9 @@ object XrefTools {
         val className = args.getString("class_name")
             ?: return ToolResult.badParams("Missing required parameter: class_name")
         val limit = args.getInt("limit", 100).coerceIn(1, 1000)
+        val mode = args.getString("mode")
 
-        val xrefs = apk.getClassXrefs(className, limit)
+        val xrefs = apk.getClassXrefs(className, limit, mode)
         return ToolResult.success {
             put("class_name", JsonPrimitive(className))
             put("ref_count", JsonPrimitive(xrefs.size))
@@ -52,13 +53,14 @@ object XrefTools {
             ?: return ToolResult.badParams("Missing required parameter: method_name")
         val direction = args.getString("direction") ?: "both"
         val limit = args.getInt("limit", 100).coerceIn(1, 1000)
+        val mode = args.getString("mode")
 
         val result = buildJsonObject {
             put("class_name", JsonPrimitive(className))
             put("method_name", JsonPrimitive(methodName))
 
             if (direction == "callers" || direction == "both") {
-                val callers = apk.getMethodXrefs(className, methodName, "to", limit)
+                val callers = apk.getMethodXrefs(className, methodName, "to", limit, mode)
                 put("callers", buildJsonArray {
                     for (x in callers) {
                         add(buildJsonObject {
@@ -72,7 +74,7 @@ object XrefTools {
             }
 
             if (direction == "callees" || direction == "both") {
-                val callees = apk.getMethodXrefs(className, methodName, "from", limit)
+                val callees = apk.getMethodXrefs(className, methodName, "from", limit, mode)
                 put("callees", buildJsonArray {
                     for (x in callees) {
                         add(buildJsonObject {

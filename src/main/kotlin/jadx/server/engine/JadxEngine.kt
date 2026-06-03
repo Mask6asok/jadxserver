@@ -5,6 +5,8 @@ import jadx.api.JadxDecompiler
 import jadx.api.ResourceType
 import jadx.api.impl.NoOpCodeCache
 import jadx.api.usage.impl.EmptyUsageInfoCache
+import jadx.api.usage.impl.InMemoryUsageInfoCache
+import jadx.server.config.XrefMode
 import jadx.server.mcp.McpToolDef
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -44,11 +46,16 @@ class JadxEngine : DecompilerEngine {
             .param("limit", "number", "Maximum number of results"),
 
         McpToolDef("class_xrefs", "Find cross-references for a class (who uses it and what it uses)")
-            .param("class_name", "string", "Fully qualified class name", required = true),
+            .param("class_name", "string", "Fully qualified class name", required = true)
+            .param("mode", "string", "Xref mode: 'text' for string search, 'jadx' for bytecode API (default: server config)")
+            .param("limit", "number", "Maximum results"),
 
         McpToolDef("method_xrefs", "Find cross-references for a method (who calls it)")
             .param("class_name", "string", "Fully qualified class name", required = true)
-            .param("method_name", "string", "Method name", required = true),
+            .param("method_name", "string", "Method name", required = true)
+            .param("direction", "string", "'callers' or 'callees' (default: both)")
+            .param("mode", "string", "Xref mode: 'text' for string search, 'jadx' for bytecode API (default: server config)")
+            .param("limit", "number", "Maximum results per direction"),
 
         McpToolDef("get_manifest", "Get the decoded AndroidManifest.xml content"),
 
@@ -76,7 +83,7 @@ class JadxEngine : DecompilerEngine {
             isDeobfuscationOn = options.deobfuscate
             isSkipResources = options.skipResources
             codeCache = NoOpCodeCache.INSTANCE
-            usageInfoCache = EmptyUsageInfoCache()
+            usageInfoCache = if (options.xrefMode == XrefMode.JADX) InMemoryUsageInfoCache() else EmptyUsageInfoCache()
             if (sourceDir != null) {
                 outDir = sourceDir.toFile()
             }
@@ -111,7 +118,7 @@ class JadxEngine : DecompilerEngine {
             }
         }
 
-        val apk = DecompiledApk(decompiler, classMap, resourceList, apkMetadata, sourceDir)
+        val apk = DecompiledApk(decompiler, classMap, resourceList, apkMetadata, sourceDir, options.xrefMode)
 
         return EngineInstance(
             engineName = name,

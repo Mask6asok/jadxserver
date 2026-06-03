@@ -2,6 +2,7 @@ plugins {
     kotlin("jvm") version "2.3.10"
     kotlin("plugin.serialization") version "2.3.10"
     application
+    id("com.gradleup.shadow") version "9.0.0-beta10"
 }
 
 group = "jadx.server"
@@ -68,4 +69,9 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+tasks.shadowJar {
+    archiveClassifier.set("all")
+    mergeServiceFiles()
 }

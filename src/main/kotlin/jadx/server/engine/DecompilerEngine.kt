@@ -1,5 +1,6 @@
 package jadx.server.engine
 
+import jadx.server.config.XrefMode
 import jadx.server.mcp.McpToolDef
 import java.nio.file.Path
 import java.time.Instant
@@ -18,7 +19,8 @@ data class EngineOptions(
     val deobfuscate: Boolean = false,
     val skipResources: Boolean = false,
     val classFilter: String? = null,
-    val sourceDir: java.nio.file.Path? = null
+    val sourceDir: java.nio.file.Path? = null,
+    val xrefMode: XrefMode = XrefMode.JADX
 )
 
 data class EngineInstance(

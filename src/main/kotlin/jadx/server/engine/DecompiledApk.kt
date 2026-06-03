@@ -7,6 +7,7 @@ import jadx.api.JadxDecompiler
 import jadx.api.ResourceFile
 import jadx.api.ResourceType
 import jadx.core.xmlgen.ResContainer
+import jadx.server.config.XrefMode
 import org.slf4j.LoggerFactory
 import java.io.Closeable
 import java.nio.file.Files
@@ -18,7 +19,8 @@ class DecompiledApk(
     val classes: Map<String, JavaClass>,
     val resources: List<ResourceFile>,
     val metadata: ApkMetadata,
-    val sourceDir: Path? = null
+    val sourceDir: Path? = null,
+    val xrefMode: XrefMode = XrefMode.JADX
 ) : Closeable {
     private val logger = LoggerFactory.getLogger(DecompiledApk::class.java)
 
@@ -26,6 +28,12 @@ class DecompiledApk(
         private set
 
     private fun touch() { lastAccess = Instant.now() }
+
+    private fun resolveMode(requestedMode: String?): XrefMode {
+        if (requestedMode.equals("jadx", ignoreCase = true)) return XrefMode.JADX
+        if (requestedMode.equals("text", ignoreCase = true)) return XrefMode.TEXT
+        return xrefMode
+    }
 
     fun getClassCode(className: String): String? {
         touch()
@@ -133,8 +141,12 @@ class DecompiledApk(
         return results
     }
 
-    fun getClassXrefs(className: String, limit: Int = 100): List<XrefMatch> {
+    fun getClassXrefs(className: String, limit: Int = 100, mode: String? = null): List<XrefMatch> {
         touch()
+        val resolvedMode = resolveMode(mode)
+        if (resolvedMode == XrefMode.JADX) {
+            return getClassXrefsJadx(className, limit)
+        }
         val targetCls = classes[className] ?: return emptyList()
         val simpleName = targetCls.name
         val results = mutableListOf<XrefMatch>()
@@ -153,8 +165,24 @@ class DecompiledApk(
         return results
     }
 
-    fun getMethodXrefs(className: String, methodName: String, direction: String = "both", limit: Int = 100): List<XrefMatch> {
+    private fun getClassXrefsJadx(className: String, limit: Int): List<XrefMatch> {
+        val cls = classes[className] ?: return emptyList()
+        val useIn = try { cls.getUseIn() } catch (_: Exception) { return emptyList() }
+        return useIn.take(limit).mapNotNull { node ->
+            when (node) {
+                is JavaClass -> XrefMatch(node.fullName, "", 0)
+                is JavaMethod -> XrefMatch(node.declaringClass.fullName, node.name, 0)
+                else -> null
+            }
+        }
+    }
+
+    fun getMethodXrefs(className: String, methodName: String, direction: String = "both", limit: Int = 100, mode: String? = null): List<XrefMatch> {
         touch()
+        val resolvedMode = resolveMode(mode)
+        if (resolvedMode == XrefMode.JADX) {
+            return getMethodXrefsJadx(className, methodName, direction, limit)
+        }
         val results = mutableListOf<XrefMatch>()
         val fullRef = "$className.$methodName"
 
@@ -185,6 +213,41 @@ class DecompiledApk(
                 }
             }
         }
+        return results
+    }
+
+    private fun getMethodXrefsJadx(className: String, methodName: String, direction: String, limit: Int): List<XrefMatch> {
+        val cls = classes[className] ?: return emptyList()
+        val results = mutableListOf<XrefMatch>()
+
+        if (direction == "to" || direction == "both") {
+            val methods = cls.methods.filter { it.name == methodName }
+            for (m in methods) {
+                if (results.size >= limit) break
+                val useIn = try { m.getUseIn() } catch (_: Exception) { emptyList() }
+                for (caller in useIn) {
+                    if (results.size >= limit) break
+                    when (caller) {
+                        is JavaMethod -> results.add(XrefMatch(caller.declaringClass.fullName, caller.name, 0))
+                        is JavaClass -> results.add(XrefMatch(caller.fullName, "", 0))
+                        else -> {}
+                    }
+                }
+            }
+        }
+
+        if (direction == "from" || direction == "both") {
+            val methods = cls.methods.filter { it.name == methodName }
+            for (m in methods) {
+                if (results.size >= limit) break
+                val used = try { m.getUsed() } catch (_: Exception) { emptySet() }
+                for (callee in used) {
+                    if (results.size >= limit) break
+                    results.add(XrefMatch(callee.declaringClass.fullName, callee.name, 0))
+                }
+            }
+        }
+
         return results
     }
 

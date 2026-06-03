@@ -13,6 +13,9 @@ data class ServerConfig(
     val maxCachedApks: Int = 10,
     val uploadDir: Path = Path.of("./uploads"),
     val toolTimeout: Duration = Duration.ofMinutes(5),
+    val xrefMode: XrefMode = XrefMode.JADX,
 )
 
 enum class TransportMode { HTTP, STDIO }
+
+enum class XrefMode { TEXT, JADX }

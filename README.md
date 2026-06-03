@@ -107,27 +107,54 @@ Each analysis tool requires a `file_hash` parameter (short MD5 prefix returned b
 - JDK 17+
 - Gradle (wrapper included)
 
+### Development Run
+
+Run directly via Gradle (no build step needed — compiles and runs in one command):
+
+```bash
+./gradlew run --args="--xref-mode jadx"
+```
+
+Pass all CLI options through `--args`:
+
+```bash
+./gradlew run --args="--listen 0.0.0.0:9090 --max-instances 4"
+```
+
 ### Build
+
+**Fat JAR** (single file, all dependencies bundled):
 
 ```bash
 ./gradlew shadowJar
 ```
 
-Output JAR: `build/libs/jadx-server-<version>-all.jar`
+Output: `build/libs/jadx-server-0.1.0-all.jar` (~25MB)
+
+**Distribution** (start scripts + separate dependency JARs):
+
+```bash
+./gradlew installDist
+```
+
+Output: `build/install/jadx-server/`
 
 ### Run
 
-**HTTP mode** (default, for MCP clients connecting over HTTP):
+**Via fat JAR**:
 
 ```bash
-java -jar build/libs/jadx-server-*-all.jar
-# Listens on 127.0.0.1:8080
+java -jar build/libs/jadx-server-0.1.0-all.jar
+java -jar build/libs/jadx-server-0.1.0-all.jar --xref-mode jadx
+java -jar build/libs/jadx-server-0.1.0-all.jar --stdio
 ```
 
-**stdio mode** (for process-based MCP clients like Claude Desktop):
+**Via distribution script**:
 
 ```bash
-java -jar build/libs/jadx-server-*-all.jar --stdio
+build/install/jadx-server/bin/jadx-server
+build/install/jadx-server/bin/jadx-server --xref-mode jadx
+build/install/jadx-server/bin/jadx-server --stdio
 ```
 
 ### CLI Options
@@ -137,8 +164,15 @@ java -jar build/libs/jadx-server-*-all.jar --stdio
 | `--stdio` | — | Use stdio transport (overrides `--transport`) |
 | `--transport <http\|stdio>` | `http` | Transport mode |
 | `--listen <addr:port>` | `127.0.0.1:8080` | HTTP listen address |
-| `-m, --max-instances <n>` | Auto (CPU/4) | Maximum concurrent decompiler instances |
+| `-m, --max-instances <n>` | `0` (auto=CPU/4, max 2) | Maximum concurrent decompiler instances |
+| `--max-per-file <n>` | `4` | Maximum concurrent instances per file |
+| `--idle-timeout <s>` | `300` (5 min) | Idle engine eviction timeout (seconds) |
+| `--cleanup-interval <s>` | `10` | Eviction check interval (seconds) |
+| `--max-cached-apks <n>` | `10` | Maximum cached APK entries |
 | `--upload-dir <path>` | `./uploads` | Directory for uploaded binaries |
+| `--tool-timeout <s>` | `300` (5 min) | Tool execution timeout (seconds) |
+| `--xref-mode <text\|jadx>` | `jadx` | Cross-reference mode: `text` for string matching (fast, less accurate), `jadx` for bytecode API (precise) |
+| `--help`, `-h` | — | Show help text |
 
 ### Upload an APK
 
@@ -162,17 +196,42 @@ Mcp-Session-Id: <session-id>
 
 ## Configuration Reference
 
+All options are configurable via CLI flags, programmatic `ServerConfig`, or environment variables (future).
+
+| Config Field | CLI Flag | Default | Description |
+|---|---|---|---|
+| `transport` | `--transport` / `--stdio` | `HTTP` | Transport mode: `HTTP` or `STDIO` |
+| `listen` | `--listen` | `127.0.0.1:8080` | HTTP listen address |
+| `maxInstances` | `-m` / `--max-instances` | `0` (auto) | Max engine instances; 0 = `min(CPU/4, 2)` |
+| `maxPerFile` | `--max-per-file` | `4` | Max concurrent instances per APK file |
+| `idleTimeout` | `--idle-timeout` | `300s` (5 min) | Idle instance eviction timeout |
+| `cleanupInterval` | `--cleanup-interval` | `10s` | Eviction check interval |
+| `maxCachedApks` | `--max-cached-apks` | `10` | Max cached APK metadata entries |
+| `uploadDir` | `--upload-dir` | `./uploads` | Upload directory for APK binaries |
+| `toolTimeout` | `--tool-timeout` | `300s` (5 min) | MCP tool execution timeout |
+| `xrefMode` | `--xref-mode` | `JADX` | Xref mode: `TEXT` (string match) or `JADX` (bytecode analysis) |
+
+### Xref Modes
+
+| Mode | Method | Accuracy | Memory | Line Info |
+|------|--------|----------|--------|-----------|
+| `text` | String matching on decompiled source | Low (catches comments, string literals) | Low | Yes |
+| `jadx` | Bytecode-level call graph via `JavaClass.getUseIn()` / `JavaMethod.getUseIn()` | High (exact call relationships) | Medium | No (line=0) |
+
+Can be overridden per-request on `class_xrefs` / `method_xrefs` tools via `mode` parameter.
+
 ```kotlin
 data class ServerConfig(
-    val transport: TransportMode = TransportMode.HTTP,   // HTTP or STDIO
-    val listen: String = "127.0.0.1:8080",               // HTTP listen address
-    val maxInstances: Int = 0,                             // 0 = auto (CPU/4)
-    val maxPerFile: Int = 4,                               // Max instances per file
-    val idleTimeout: Duration = Duration.ofMinutes(5),    // Idle eviction timeout
-    val cleanupInterval: Duration = Duration.ofSeconds(10), // Eviction check interval
-    val maxCachedApks: Int = 10,                           // Max cached APKs
-    val uploadDir: Path = Path.of("./uploads"),            // Upload directory
-    val toolTimeout: Duration = Duration.ofMinutes(5),     // Tool execution timeout
+    val transport: TransportMode = TransportMode.HTTP,
+    val listen: String = "127.0.0.1:8080",
+    val maxInstances: Int = 0,
+    val maxPerFile: Int = 4,
+    val idleTimeout: Duration = Duration.ofMinutes(5),
+    val cleanupInterval: Duration = Duration.ofSeconds(10),
+    val maxCachedApks: Int = 10,
+    val uploadDir: Path = Path.of("./uploads"),
+    val toolTimeout: Duration = Duration.ofMinutes(5),
+    val xrefMode: XrefMode = XrefMode.JADX,
 )
 ```
 
