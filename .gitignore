@@ -10,3 +10,4 @@ bin
 run.sh
 build.sh
 .DS_Store
+.omo
