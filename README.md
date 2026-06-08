@@ -1,34 +1,34 @@
 # jadx-server
 
-An MCP (Model Context Protocol) server for Android APK decompilation, powered by [jadx](https://github.com/skylot/jadx) as the decompilation engine.
+一个基于 MCP (Model Context Protocol) 协议的 Android APK 反编译服务器，反编译引擎采用 [jadx](https://github.com/skylot/jadx)。
 
-jadx-server exposes jadx's decompilation capabilities through the standardized MCP protocol, allowing any MCP-compatible client (AI assistants, IDEs, automation tools) to decompile, explore, and analyze Android APK files via structured tool calls — no GUI needed.
+jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力，任何兼容 MCP 的客户端（AI 助手、IDE、自动化工具）都可以通过结构化的工具调用完成 APK 的反编译、浏览和分析 —— 无需 GUI。
 
-## Features
+## 特性
 
-- **Pure Kotlin/JVM** — single-process architecture, jadx-core embedded in-process, zero IPC overhead
-- **Dual Transport** — stdio and Streamable HTTP (Ktor-backed) out of the box
-- **25 MCP Tools** — 9 server management tools + 16 analysis tools covering full APK exploration
-- **Instance Pooling** — concurrent decompilation tasks via configurable engine pool with acquire/release/evict lifecycle
-- **Session Management** — per-client session tracking with instance affinity
-- **Background Tasks** — long-running decompilation executes on virtual threads, clients poll for results
-- **Idle Eviction** — automatic cleanup of idle engine instances on a configurable schedule
-- **File Indexing** — MD5-based file tracking with JSON persistence across restarts
-- **Zero-Copy Access** — direct object reference to jadx's in-memory class metadata, no intermediate files for structure queries
-- **Disk Source Cache** — decompiled Java source saved to `uploads/binary/<md5>/cache/sources/` for fast file-based search without memory bloat
-- **Multi-Format Support** — APK, AAB, XAPK, APKS, APKM, DEX, and more via jadx plugins
+- **纯 Kotlin/JVM** — 单进程架构，jadx-core 进程内嵌入，零 IPC 开销
+- **双传输模式** — 开箱支持 stdio 和 Streamable HTTP（Ktor 后端）
+- **25 个 MCP 工具** — 9 个服务端管理工具 + 16 个分析工具，覆盖 APK 全链路探索
+- **实例池化** — 可配置的引擎池，支持并发反编译任务，带 acquire/release/evict 生命周期
+- **会话管理** — 按客户端会话追踪，带实例亲和性
+- **后台任务** — 长时间反编译在虚拟线程上执行，客户端可轮询结果
+- **空闲驱逐** — 按配置自动清理空闲引擎实例
+- **文件索引** — 基于 MD5 的文件追踪，JSON 持久化，重启不丢
+- **零拷贝访问** — 直接引用 jadx 内存中的类元数据，结构查询不落地中间文件
+- **磁盘源码缓存** — 反编译后的 Java 源码保存到 `uploads/binary/<md5>/cache/sources/`，文件级搜索快且不撑爆内存
+- **多格式支持** — 支持 APK、AAB、XAPK、APKS、APKM、DEX 等，通过 jadx 插件扩展
 
-## Architecture
+## 架构
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    MCP Client                        │
-│            (AI assistant, IDE, CLI tool)              │
+│                    MCP 客户端                         │
+│            (AI 助手、IDE、CLI 工具)                   │
 └──────────────────┬──────────────────────────────────┘
-                   │ MCP Protocol (JSON-RPC)
+                   │ MCP 协议 (JSON-RPC)
           ┌────────┴────────┐
-          │   McpHandler    │  Tool registration & dispatch
-          │   ToolRegistry  │  Server ↔ Analysis tool routing
+          │   McpHandler    │  工具注册与分发
+          │   ToolRegistry  │  服务端 ↔ 分析工具路由
           └────────┬────────┘
                    │
     ┌──────────────┼──────────────┐
@@ -39,109 +39,110 @@ jadx-server exposes jadx's decompilation capabilities through the standardized M
 └───────┘  └──────┬──────┘  └────────┘
                   │
            ┌──────┴──────┐
-           │  JadxEngine  │  Wraps JadxDecompiler
-           │ DecompiledApk│  Zero-copy result access
+           │  JadxEngine  │  包装 JadxDecompiler
+           │ DecompiledApk│  零拷贝结果访问
            └─────────────┘
 ```
 
-### Module Layout
+### 模块布局
 
-| Module | Key Files | Responsibility |
-|--------|-----------|----------------|
-| `config` | `ServerConfig.kt` | CLI args, transport mode, pool sizing, timeouts |
-| `mcp` | `McpHandler.kt`, `McpToolDef.kt`, `McpResult.kt` | MCP protocol wiring, tool schema generation, result formatting |
-| `server` | `EnginePool.kt`, `FileIndex.kt`, `SessionManager.kt`, `TaskManager.kt`, `IdleEvictor.kt`, `ServerState.kt` | Instance lifecycle, file tracking, session affinity, background tasks, eviction |
-| `engine` | `DecompilerEngine.kt`, `JadxEngine.kt`, `DecompiledApk.kt`, `MockEngine.kt` | Decompiler abstraction, jadx integration, zero-copy data access |
-| `tools` | `ServerTools.kt`, `CoreTools.kt`, `ClassTools.kt`, `MethodTools.kt`, `SearchTools.kt`, `XrefTools.kt`, `ResourceTools.kt`, `ToolRegistry.kt` | 25 MCP tool implementations |
-| `util` | `HashUtil.kt`, `JsonExt.kt` | MD5 hashing, JSON helper extensions |
+| 模块 | 关键文件 | 职责 |
+|------|---------|------|
+| `config` | `ServerConfig.kt` | CLI 参数、传输模式、池大小、超时 |
+| `mcp` | `McpHandler.kt`、`McpToolDef.kt`、`McpResult.kt` | MCP 协议接线、工具 Schema 生成、结果格式化 |
+| `server` | `EnginePool.kt`、`FileIndex.kt`、`SessionManager.kt`、`TaskManager.kt`、`IdleEvictor.kt`、`ServerState.kt` | 实例生命周期、文件追踪、会话亲和、后台任务、驱逐 |
+| `engine` | `DecompilerEngine.kt`、`JadxEngine.kt`、`DecompiledApk.kt`、`MockEngine.kt` | 反编译器抽象、jadx 集成、零拷贝数据访问 |
+| `tools` | `ServerTools.kt`、`CoreTools.kt`、`ClassTools.kt`、`MethodTools.kt`、`SearchTools.kt`、`XrefTools.kt`、`ResourceTools.kt`、`ToolRegistry.kt` | 25 个 MCP 工具实现 |
+| `util` | `HashUtil.kt`、`JsonExt.kt` | MD5 哈希、JSON 辅助扩展 |
 
-## MCP Tools Reference
+## MCP 工具参考
 
-### Server Tools (9)
+### 服务端工具（9 个）
 
-| Tool | Description |
-|------|-------------|
-| `upload_file` | Get upload URL and instructions for uploading a binary file |
-| `list_files` | List known binaries (uploaded or previously opened), with filters |
-| `list_instances` | List all active engine instances in the pool |
-| `server_health` | Check server health: uptime, memory, instance counts |
-| `tool_catalog` | Search and discover available tools by keyword |
-| `tool_help` | Get detailed help for a specific tool by exact name |
-| `task_status` | Check status/result of a background task |
-| `wait_for_analysis` | Wait for a file's background decompilation to complete |
-| `cleanup_session_workers` | Close idle (or all) engine instances for the current session |
+| 工具 | 说明 |
+|------|------|
+| `upload_file` | 获取上传 URL 和上传说明 |
+| `register_file` | 注册已拷贝到上传目录的文件（stdio 模式） |
+| `list_files` | 列出已知二进制文件（已上传或之前打开过），支持过滤 |
+| `list_instances` | 列出池中所有活跃引擎实例 |
+| `server_health` | 检查服务端健康：运行时间、内存、实例数 |
+| `tool_catalog` | 按关键词搜索和发现可用工具 |
+| `tool_help` | 按精确名称获取某个工具的详细帮助 |
+| `task_status` | 检查后台任务的状态和结果 |
+| `wait_for_analysis` | 等待某个文件的反编译完成 |
+| `cleanup_session_workers` | 关闭当前会话的空闲（或全部）引擎实例 |
 
-### Analysis Tools (16)
+### 分析工具（16 个）
 
-Each analysis tool requires a `file_hash` parameter (short MD5 prefix returned by `upload_file`).
+每个分析工具都需要 `file_hash` 参数（`upload_file` 返回的短 MD5 前缀）。
 
-| Tool | Description |
-|------|-------------|
-| **Core** | |
-| `decompile_apk` | Decompile APK, return summary metadata (package, classes, permissions) |
-| `survey` | Comprehensive binary overview (metadata + top classes + resources) |
-| `analysis_status` | Check current decompilation status for a file |
-| **Class** | |
-| `list_classes` | List classes with optional package filter and pagination |
-| `get_class_code` | Return full decompiled Java source for a class |
-| `class_info` | Return class structure: methods, fields, inheritance, inner classes |
-| **Method** | |
-| `get_method_code` | Return decompiled source for a specific method |
-| `list_methods` | List all methods of a class with signatures |
-| **Search** | |
-| `search_code` | Regex/text search across all decompiled source code |
-| `search_string` | Search string constants in the APK |
-| `find_class` | Find classes by name fragment or pattern |
-| **Cross-Reference** | |
-| `class_xrefs` | Find all classes that reference the target class |
-| `method_xrefs` | Find callers and callees of a method |
-| **Resource** | |
-| `get_manifest` | Return decoded AndroidManifest.xml content |
-| `get_resource` | Return specific resource file content by path |
-| `list_resources` | List all resource files with type filters |
+| 工具 | 说明 |
+|------|------|
+| **核心** | |
+| `decompile_apk` | 反编译 APK，返回摘要元数据（包名、类数、权限） |
+| `survey` | 二进制全景概览（元数据 + 主要类 + 资源） |
+| `analysis_status` | 检查文件当前反编译状态 |
+| **类** | |
+| `list_classes` | 列出类，支持包名过滤和分页 |
+| `get_class_code` | 返回某个类的完整反编译 Java 源码 |
+| `class_info` | 返回类结构：方法、字段、继承关系、内部类 |
+| **方法** | |
+| `get_method_code` | 返回某个方法的反编译源码 |
+| `list_methods` | 列出某个类的所有方法及签名 |
+| **搜索** | |
+| `search_code` | 在所有反编译源码中做正则/文本搜索 |
+| `search_string` | 搜索 APK 中的字符串常量 |
+| `find_class` | 按名称片段或模式查找类 |
+| **交叉引用** | |
+| `class_xrefs` | 查找引用目标类的所有类 |
+| `method_xrefs` | 查找某个方法的调用者和被调用者 |
+| **资源** | |
+| `get_manifest` | 返回解码后的 AndroidManifest.xml 内容 |
+| `get_resource` | 按路径返回特定资源文件内容 |
+| `list_resources` | 列出所有资源文件，支持类型过滤 |
 
-## Quick Start
+## 快速开始
 
-### Prerequisites
+### 前置要求
 
 - JDK 17+
-- Gradle (wrapper included)
+- Gradle（已包含 wrapper）
 
-### Development Run
+### 开发运行
 
-Run directly via Gradle (no build step needed — compiles and runs in one command):
+直接通过 Gradle 运行（无需构建步骤，一条命令编译并运行）：
 
 ```bash
 ./gradlew run --args="--xref-mode jadx"
 ```
 
-Pass all CLI options through `--args`:
+所有 CLI 选项通过 `--args` 传递：
 
 ```bash
 ./gradlew run --args="--listen 0.0.0.0:9090 --max-instances 4"
 ```
 
-### Build
+### 构建
 
-**Fat JAR** (single file, all dependencies bundled):
+**Fat JAR**（单文件，所有依赖打包）：
 
 ```bash
 ./gradlew shadowJar
 ```
 
-Output: `build/libs/jadx-server-0.1.0-all.jar` (~25MB)
+输出：`build/libs/jadx-server-0.1.0-all.jar`（约 25MB）
 
-**Distribution** (start scripts + separate dependency JARs):
+**分发包**（启动脚本 + 独立依赖 JAR）：
 
 ```bash
 ./gradlew installDist
 ```
 
-Output: `build/install/jadx-server/`
+输出：`build/install/jadx-server/`
 
-### Run
+### 运行
 
-**Via fat JAR**:
+**通过 fat JAR**：
 
 ```bash
 java -jar build/libs/jadx-server-0.1.0-all.jar
@@ -149,7 +150,7 @@ java -jar build/libs/jadx-server-0.1.0-all.jar --xref-mode jadx
 java -jar build/libs/jadx-server-0.1.0-all.jar --stdio
 ```
 
-**Via distribution script**:
+**通过分发脚本**：
 
 ```bash
 build/install/jadx-server/bin/jadx-server
@@ -157,11 +158,11 @@ build/install/jadx-server/bin/jadx-server --xref-mode jadx
 build/install/jadx-server/bin/jadx-server --stdio
 ```
 
-### MCP Client Configuration
+### MCP 客户端配置
 
-#### Claude Code (stdio)
+#### Claude Code（stdio）
 
-Add to `~/.claude.json`:
+添加到 `~/.claude.json`：
 
 ```json
 {
@@ -174,9 +175,9 @@ Add to `~/.claude.json`:
 }
 ```
 
-#### Claude Code (HTTP)
+#### Claude Code（HTTP）
 
-Start jadx-server in a terminal first, then add to config:
+先在终端启动 jadx-server，再添加到配置：
 
 ```bash
 java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
@@ -193,9 +194,9 @@ java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
 }
 ```
 
-#### OpenCode (stdio)
+#### OpenCode（stdio）
 
-Edit `~/.config/opencode/opencode.json`:
+编辑 `~/.config/opencode/opencode.json`：
 
 ```json
 {
@@ -208,7 +209,7 @@ Edit `~/.config/opencode/opencode.json`:
 }
 ```
 
-#### OpenCode (HTTP)
+#### OpenCode（HTTP）
 
 ```bash
 java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
@@ -225,68 +226,60 @@ java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
 }
 ```
 
-### CLI Options
+### 上传 APK
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--stdio` | — | Use stdio transport (overrides `--transport`) |
-| `--transport <http\|stdio>` | `http` | Transport mode |
-| `--listen <addr:port>` | `127.0.0.1:8080` | HTTP listen address |
-| `-m, --max-instances <n>` | `0` (auto=CPU/4, max 2) | Maximum concurrent decompiler instances |
-| `--max-per-file <n>` | `4` | Maximum concurrent instances per file |
-| `--idle-timeout <s>` | `300` (5 min) | Idle engine eviction timeout (seconds) |
-| `--cleanup-interval <s>` | `10` | Eviction check interval (seconds) |
-| `--max-cached-apks <n>` | `10` | Maximum cached APK entries |
-| `--upload-dir <path>` | `./uploads` | Directory for uploaded binaries |
-| `--tool-timeout <s>` | `300` (5 min) | Tool execution timeout (seconds) |
-| `--xref-mode <text\|jadx>` | `jadx` | Cross-reference mode: `text` for string matching (fast, less accurate), `jadx` for bytecode API (precise) |
-| `--help`, `-h` | — | Show help text |
+#### HTTP 模式
 
-### Upload an APK
-
-Use the MCP `upload_file` tool to get instructions, then POST the file:
+使用 MCP `upload_file` 工具获取上传地址，然后 POST 文件：
 
 ```bash
 curl -X POST http://127.0.0.1:8080/upload \
   -F "file=@your-app.apk"
 ```
 
-Or use any MCP client to call `upload_file`, then use the returned `file_hash` in analysis tools.
+或者直接用 MCP 客户端调用 `upload_file`，服务端会返回完整的上传 URL，用返回的 `file_hash` 调用分析工具。
 
-### MCP Connection (HTTP)
+#### STDIO 模式
 
-Connect an MCP client to `POST /mcp` with:
+1. 调用 `upload_file`，服务端返回 `target_dir`（上传目录的绝对路径）
+2. 将 APK 文件拷贝到该目录
+3. 调用 `register_file(file_path="/绝对路径/your-app.apk")`，服务端计算 MD5、建立索引
+4. 用返回的 `file_hash` 调用分析工具
+
+### MCP 连接（HTTP）
+
+MCP 客户端连接到 `POST /mcp`，请求头需携带：
 
 ```
 Accept: application/json, text/event-stream
 Mcp-Session-Id: <session-id>
 ```
 
-## Configuration Reference
+## 配置参考
 
-All options are configurable via CLI flags, programmatic `ServerConfig`, or environment variables (future).
+所有选项均可通过 CLI 参数、编程式 `ServerConfig` 或环境变量（未来支持）配置。
 
-| Config Field | CLI Flag | Default | Description |
+| 配置字段 | CLI 参数 | 默认值 | 说明 |
 |---|---|---|---|
-| `transport` | `--transport` / `--stdio` | `HTTP` | Transport mode: `HTTP` or `STDIO` |
-| `listen` | `--listen` | `127.0.0.1:8080` | HTTP listen address |
-| `maxInstances` | `-m` / `--max-instances` | `0` (auto) | Max engine instances; 0 = `min(CPU/4, 2)` |
-| `maxPerFile` | `--max-per-file` | `4` | Max concurrent instances per APK file |
-| `idleTimeout` | `--idle-timeout` | `300s` (5 min) | Idle instance eviction timeout |
-| `cleanupInterval` | `--cleanup-interval` | `10s` | Eviction check interval |
-| `maxCachedApks` | `--max-cached-apks` | `10` | Max cached APK metadata entries |
-| `uploadDir` | `--upload-dir` | `./uploads` | Upload directory for APK binaries |
-| `toolTimeout` | `--tool-timeout` | `300s` (5 min) | MCP tool execution timeout |
-| `xrefMode` | `--xref-mode` | `JADX` | Xref mode: `TEXT` (string match) or `JADX` (bytecode analysis) |
+| `transport` | `--transport` / `--stdio` | `HTTP` | 传输模式：`HTTP` 或 `STDIO` |
+| `listen` | `--listen` | `127.0.0.1:8080` | HTTP 监听地址 |
+| `maxInstances` | `-m` / `--max-instances` | `0`（自动） | 最大引擎实例数；0 = `min(CPU/4, 2)` |
+| `maxPerFile` | `--max-per-file` | `4` | 单个 APK 文件最大并发实例数 |
+| `idleTimeout` | `--idle-timeout` | `300s`（5 分钟） | 空闲实例驱逐超时 |
+| `cleanupInterval` | `--cleanup-interval` | `10s` | 驱逐检查间隔 |
+| `maxCachedApks` | `--max-cached-apks` | `10` | 最大缓存 APK 元数据条目数 |
+| `uploadDir` | `--upload-dir` | `./uploads` | APK 二进制上传目录 |
+| `toolTimeout` | `--tool-timeout` | `300s`（5 分钟） | MCP 工具执行超时 |
+| `xrefMode` | `--xref-mode` | `JADX` | 交叉引用模式：`TEXT`（字符串匹配）或 `JADX`（字节码分析） |
 
-### Xref Modes
+### 交叉引用模式
 
-| Mode | Method | Accuracy | Memory | Line Info |
-|------|--------|----------|--------|-----------|
-| `text` | String matching on decompiled source | Low (catches comments, string literals) | Low | Yes |
-| `jadx` | Bytecode-level call graph via `JavaClass.getUseIn()` / `JavaMethod.getUseIn()` | High (exact call relationships) | Medium | No (line=0) |
+| 模式 | 方法 | 准确度 | 内存 | 行号信息 |
+|------|------|--------|------|----------|
+| `text` | 在反编译源码上做字符串匹配 | 低（会命中注释、字符串字面量） | 低 | 有 |
+| `jadx` | 字节码级调用图，通过 `JavaClass.getUseIn()` / `JavaMethod.getUseIn()` | 高（精确调用关系） | 中 | 无（line=0） |
 
-Can be overridden per-request on `class_xrefs` / `method_xrefs` tools via `mode` parameter.
+可在 `class_xrefs` / `method_xrefs` 工具上通过 `mode` 参数按请求覆盖。
 
 ```kotlin
 data class ServerConfig(
@@ -303,29 +296,29 @@ data class ServerConfig(
 )
 ```
 
-## How It Works
+## 工作原理
 
-1. **Upload** — Client uploads an APK via `POST /upload` (HTTP) or `upload_file` tool. The server computes an MD5 hash and indexes the file.
+1. **上传** — 客户端通过 `POST /upload`（HTTP）或 `upload_file` → `register_file`（STDIO）上传 APK。服务端计算 MD5 哈希并建立索引。
 
-2. **Decompile** — Client calls `decompile_apk` with the file hash. The engine pool acquires or spawns a `JadxDecompiler` instance and loads all classes into memory. Long decompilations run as background tasks.
+2. **反编译** — 客户端调用 `decompile_apk` 并传入文件哈希。引擎池获取或创建 `JadxDecompiler` 实例，将所有类加载到内存。耗时反编译作为后台任务执行。
 
-3. **Analyze** — Client calls analysis tools (`get_class_code`, `search_code`, `class_xrefs`, etc.) with the file hash. The pool reuses the existing instance — no re-decompilation needed.
+3. **分析** — 客户端调用分析工具（`get_class_code`、`search_code`、`class_xrefs` 等）并传入文件哈希。池复用已有实例 —— 无需重新反编译。
 
-4. **Evict** — Idle instances are automatically closed after the configured timeout, freeing JVM heap. The file index persists across restarts.
+4. **驱逐** — 空闲实例在配置的超时后自动关闭，释放 JVM 堆内存。文件索引在重启后持久化保留。
 
-## Tech Stack
+## 技术栈
 
-| Component | Technology |
-|-----------|------------|
-| Language | Kotlin 2.3.10 |
+| 组件 | 技术 |
+|------|------|
+| 语言 | Kotlin 2.3.10 |
 | MCP SDK | `io.modelcontextprotocol:kotlin-sdk:0.12.0` |
-| HTTP Server | Ktor 3.1.3 (Netty) |
-| Decompilation | jadx-core (local JAR) |
-| Serialization | kotlinx-serialization-json 1.8.1 |
-| Coroutines | kotlinx-coroutines 1.10.2 |
-| Logging | SLF4J + Logback |
+| HTTP 服务端 | Ktor 3.1.3 (Netty) |
+| 反编译 | jadx-core (本地 JAR) |
+| 序列化 | kotlinx-serialization-json 1.8.1 |
+| 协程 | kotlinx-coroutines 1.10.2 |
+| 日志 | SLF4J + Logback |
 
-## Project Structure
+## 项目结构
 
 ```
 src/main/kotlin/jadx/server/
@@ -337,21 +330,21 @@ src/main/kotlin/jadx/server/
 └── util/            # Hash utilities, JSON extensions
 ```
 
-## Testing
+## 测试
 
 ```bash
 ./gradlew test
 ```
 
-Unit tests cover `FileIndex`, `EnginePool`, and `ToolRegistry` with `MockEngine` for jadx-free test runs.
+单元测试覆盖 `FileIndex`、`EnginePool` 和 `ToolRegistry`，使用 `MockEngine` 实现不依赖 jadx 的测试运行。
 
-## Known Limitations
+## 已知限制
 
-- **jadx warnings** — Complex APKs (especially Kotlin coroutine code) may produce `JadxOverflowException` or `ExceptionHandler` warnings during decompilation. These are normal jadx behavior and do not crash the server. Affected methods will contain `/* JADX WARN: ... */` comments in their decompiled output.
-- **Search speed trade-off** — Using `NoOpCodeCache` keeps memory low but means `get_class_code` re-decompiles each time. For search operations (`search_code`, `class_xrefs`, etc.), source files are cached on disk for fast file-based grep without holding all decompiled code in memory.
-- **Single-JVM** — All decompiler instances share one JVM process. For heavy concurrent workloads, run multiple instances behind a load balancer.
-- **Thread safety** — `JadxDecompiler` instances are not thread-safe. The engine pool enforces one-instance-per-task semantics via `Busy`/`Idle` state transitions.
+- **jadx 警告** — 复杂 APK（尤其是 Kotlin 协程代码）反编译时可能产生 `JadxOverflowException` 或 `ExceptionHandler` 警告。这是 jadx 的正常行为，不会导致服务端崩溃。受影响的方法会在反编译输出中包含 `/* JADX WARN: ... */` 注释。
+- **搜索速度权衡** — 使用 `NoOpCodeCache` 保持低内存占用，意味着 `get_class_code` 每次都会重新反编译。搜索操作（`search_code`、`class_xrefs` 等）的源码文件会缓存到磁盘，基于文件的快速 grep 无需在内存中保留全部反编译代码。
+- **单 JVM** — 所有反编译实例共享一个 JVM 进程。高并发重负载时，建议在负载均衡器后运行多个实例。
+- **线程安全** — `JadxDecompiler` 实例非线程安全。引擎池通过 `Busy`/`Idle` 状态转换强制执行单实例单任务语义。
 
-## License
+## 许可证
 
-This project uses [jadx](https://github.com/skylot/jadx) under its Apache 2.0 license.
+本项目在 [jadx](https://github.com/skylot/jadx) 的 Apache 2.0 许可证下使用 jadx。
