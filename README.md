@@ -2,7 +2,7 @@
 
 一个基于 MCP (Model Context Protocol) 协议的 Android APK 反编译服务器，反编译引擎采用 [jadx](https://github.com/skylot/jadx)。
 
-jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力，任何兼容 MCP 的客户端（AI 助手、IDE、自动化工具）都可以通过结构化的工具调用完成 APK 的反编译、浏览和分析 —— 无需 GUI。
+jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力，任何兼容 MCP 的客户端（AI 助手、IDE、自动化工具）都可以通过结构化的工具调用完成 APK、JAR 等 Android/Java 二进制文件的反编译、浏览和分析 —— 无需 GUI。
 
 ## 特性
 
@@ -16,7 +16,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 - **文件索引** — 基于 MD5 的文件追踪，JSON 持久化，重启不丢
 - **零拷贝访问** — 直接引用 jadx 内存中的类元数据，结构查询不落地中间文件
 - **磁盘源码缓存** — 反编译后的 Java 源码保存到 `uploads/binary/<md5>/cache/sources/`，文件级搜索快且不撑爆内存
-- **多格式支持** — 支持 APK、AAB、XAPK、APKS、APKM、DEX 等，通过 jadx 插件扩展
+- **多格式支持** — 支持 APK、JAR、AAB、XAPK、APKS、APKM、DEX 等，通过 jadx 插件扩展
 
 ## 架构
 
@@ -79,7 +79,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 | 工具 | 说明 |
 |------|------|
 | **核心** | |
-| `decompile_apk` | 反编译 APK，返回摘要元数据（包名、类数、权限） |
+| `decompile_apk` | 反编译 APK/JAR，返回摘要元数据（包名、类数、权限） |
 | `survey` | 二进制全景概览（元数据 + 主要类 + 资源） |
 | `analysis_status` | 检查文件当前反编译状态 |
 | **类** | |
@@ -91,7 +91,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 | `list_methods` | 列出某个类的所有方法及签名 |
 | **搜索** | |
 | `search_code` | 在所有反编译源码中做正则/文本搜索 |
-| `search_string` | 搜索 APK 中的字符串常量 |
+| `search_string` | 搜索 APK/JAR 中的字符串常量 |
 | `find_class` | 按名称片段或模式查找类 |
 | **交叉引用** | |
 | `class_xrefs` | 查找引用目标类的所有类 |
@@ -226,7 +226,7 @@ java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
 }
 ```
 
-### 上传 APK
+### 上传 APK / JAR
 
 #### HTTP 模式
 
@@ -242,7 +242,7 @@ curl -X POST http://127.0.0.1:8080/upload \
 #### STDIO 模式
 
 1. 调用 `upload_file`，服务端返回 `target_dir`（上传目录的绝对路径）
-2. 将 APK 文件拷贝到该目录
+2. 将 APK/JAR 文件拷贝到该目录
 3. 调用 `register_file(file_path="/绝对路径/your-app.apk")`，服务端计算 MD5、建立索引
 4. 用返回的 `file_hash` 调用分析工具
 
@@ -264,11 +264,11 @@ Mcp-Session-Id: <session-id>
 | `transport` | `--transport` / `--stdio` | `HTTP` | 传输模式：`HTTP` 或 `STDIO` |
 | `listen` | `--listen` | `127.0.0.1:8080` | HTTP 监听地址 |
 | `maxInstances` | `-m` / `--max-instances` | `0`（自动） | 最大引擎实例数；0 = `min(CPU/4, 2)` |
-| `maxPerFile` | `--max-per-file` | `4` | 单个 APK 文件最大并发实例数 |
+| `maxPerFile` | `--max-per-file` | `4` | 单个 APK/JAR 文件最大并发实例数 |
 | `idleTimeout` | `--idle-timeout` | `300s`（5 分钟） | 空闲实例驱逐超时 |
 | `cleanupInterval` | `--cleanup-interval` | `10s` | 驱逐检查间隔 |
-| `maxCachedApks` | `--max-cached-apks` | `10` | 最大缓存 APK 元数据条目数 |
-| `uploadDir` | `--upload-dir` | `./uploads` | APK 二进制上传目录 |
+| `maxCachedApks` | `--max-cached-apks` | `10` | 最大缓存 APK/JAR 元数据条目数 |
+| `uploadDir` | `--upload-dir` | `./uploads` | APK/JAR 二进制上传目录 |
 | `toolTimeout` | `--tool-timeout` | `300s`（5 分钟） | MCP 工具执行超时 |
 | `xrefMode` | `--xref-mode` | `JADX` | 交叉引用模式：`TEXT`（字符串匹配）或 `JADX`（字节码分析） |
 
@@ -298,9 +298,9 @@ data class ServerConfig(
 
 ## 工作原理
 
-1. **上传** — 客户端通过 `POST /upload`（HTTP）或 `upload_file` → `register_file`（STDIO）上传 APK。服务端计算 MD5 哈希并建立索引。
+1. **上传** — 客户端通过 `POST /upload`（HTTP）或 `upload_file` → `register_file`（STDIO）上传 APK/JAR。服务端计算 MD5 哈希并建立索引。
 
-2. **反编译** — 客户端调用 `decompile_apk` 并传入文件哈希。引擎池获取或创建 `JadxDecompiler` 实例，将所有类加载到内存。耗时反编译作为后台任务执行。
+2. **反编译** — 客户端调用 `decompile_apk` 并传入文件哈希。引擎池获取或创建 `JadxDecompiler` 实例，将所有类加载到内存。耗时反编译作为后台任务执行。支持 APK、JAR、DEX、AAB 等多种格式。
 
 3. **分析** — 客户端调用分析工具（`get_class_code`、`search_code`、`class_xrefs` 等）并传入文件哈希。池复用已有实例 —— 无需重新反编译。
 
@@ -340,7 +340,7 @@ src/main/kotlin/jadx/server/
 
 ## 已知限制
 
-- **jadx 警告** — 复杂 APK（尤其是 Kotlin 协程代码）反编译时可能产生 `JadxOverflowException` 或 `ExceptionHandler` 警告。这是 jadx 的正常行为，不会导致服务端崩溃。受影响的方法会在反编译输出中包含 `/* JADX WARN: ... */` 注释。
+- **jadx 警告** — 复杂 APK/JAR（尤其是 Kotlin 协程代码）反编译时可能产生 `JadxOverflowException` 或 `ExceptionHandler` 警告。这是 jadx 的正常行为，不会导致服务端崩溃。受影响的方法会在反编译输出中包含 `/* JADX WARN: ... */` 注释。
 - **搜索速度权衡** — 使用 `NoOpCodeCache` 保持低内存占用，意味着 `get_class_code` 每次都会重新反编译。搜索操作（`search_code`、`class_xrefs` 等）的源码文件会缓存到磁盘，基于文件的快速 grep 无需在内存中保留全部反编译代码。
 - **单 JVM** — 所有反编译实例共享一个 JVM 进程。高并发重负载时，建议在负载均衡器后运行多个实例。
 - **线程安全** — `JadxDecompiler` 实例非线程安全。引擎池通过 `Busy`/`Idle` 状态转换强制执行单实例单任务语义。
