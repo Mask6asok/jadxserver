@@ -57,6 +57,7 @@ class ToolRegistry private constructor(
             // ── Server tools ──
             for (def in ServerTools.definitions()) defs += def
             serverHandlers["upload_file"] = ServerToolHandler(ServerTools::uploadFile)
+            serverHandlers["register_file"] = ServerToolHandler(ServerTools::registerFile)
             serverHandlers["list_files"] = ServerToolHandler(ServerTools::listFiles)
             serverHandlers["list_instances"] = ServerToolHandler(ServerTools::listInstances)
             serverHandlers["server_health"] = ServerToolHandler(ServerTools::serverHealth)

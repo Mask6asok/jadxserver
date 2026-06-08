@@ -2,6 +2,7 @@ package jadx.server.tools
 
 import jadx.server.mcp.McpToolDef
 import jadx.server.mcp.ToolResult
+import jadx.server.config.TransportMode
 import jadx.server.server.FileStatus
 import jadx.server.server.InstanceInfo
 import jadx.server.server.ServerState
@@ -15,6 +16,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
+import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Duration
 
 object ServerTools {
@@ -22,6 +25,8 @@ object ServerTools {
 
     fun definitions(): List<McpToolDef> = listOf(
         McpToolDef("upload_file", "Get upload URL and instructions for uploading a binary file"),
+        McpToolDef("register_file", "Register a file that was copied to the upload directory (stdio mode)")
+            .param("file_path", "string", "Absolute path to the copied file", true),
         McpToolDef("list_files", "List known binaries (uploaded or previously opened)")
             .param("name", "string", "Filter by basename (substring match)", false)
             .param("md5", "string", "Filter by MD5 hash (exact match)", false)
@@ -42,12 +47,47 @@ object ServerTools {
     )
 
     fun uploadFile(args: JsonObject, sessionId: String, state: ServerState): ToolResult {
+        return when (state.config.transport) {
+            TransportMode.HTTP -> {
+                val baseUrl = "http://${state.config.listen}"
+                ToolResult.success {
+                    put("upload_url", JsonPrimitive("$baseUrl/upload"))
+                    put("upload_method", JsonPrimitive("POST"))
+                    put("content_type", JsonPrimitive("multipart/form-data"))
+                    put("field_name", JsonPrimitive("file"))
+                    put("description", JsonPrimitive("Upload an APK/DEX/JAR file via multipart POST to $baseUrl/upload. Response includes file_hash for subsequent tools."))
+                }
+            }
+            TransportMode.STDIO -> {
+                val uploadDir = state.config.uploadDir.toAbsolutePath().normalize().toString()
+                ToolResult.success {
+                    put("mode", JsonPrimitive("local_copy"))
+                    put("target_dir", JsonPrimitive(uploadDir))
+                    put("description", JsonPrimitive("Copy an APK/DEX/JAR file to '$uploadDir', then call register_file with the copied file path to complete the upload."))
+                }
+            }
+        }
+    }
+
+    fun registerFile(args: JsonObject, sessionId: String, state: ServerState): ToolResult {
+        val filePath = args.getString("file_path")
+            ?: return ToolResult.badParams("Missing required parameter: file_path")
+
+        val path = Path.of(filePath)
+        if (!Files.exists(path)) {
+            return ToolResult.notFound("File not found: $filePath")
+        }
+        if (!Files.isRegularFile(path)) {
+            return ToolResult.badParams("Path is not a regular file: $filePath")
+        }
+
+        val entry = state.fileIndex.add(path, state.config.uploadDir)
         return ToolResult.success {
-            put("upload_url", JsonPrimitive("POST /upload"))
-            put("upload_method", JsonPrimitive("POST"))
-            put("content_type", JsonPrimitive("multipart/form-data"))
-            put("field_name", JsonPrimitive("file"))
-            put("description", JsonPrimitive("Upload an APK/DEX/JAR file via multipart POST. Response includes file_hash for subsequent tools."))
+            put("file_hash", JsonPrimitive(entry.hash))
+            put("md5", JsonPrimitive(entry.md5))
+            put("name", JsonPrimitive(entry.originalName))
+            put("size", JsonPrimitive(entry.fileSize))
+            put("status", JsonPrimitive("registered"))
         }
     }
 

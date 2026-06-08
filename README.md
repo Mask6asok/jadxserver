@@ -186,7 +186,7 @@ java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
 {
   "mcpServers": {
     "jadx-server": {
-      "transport": "http"
+      "transport": "http",
       "url": "http://127.0.0.1:8080/mcp"
     }
   }
