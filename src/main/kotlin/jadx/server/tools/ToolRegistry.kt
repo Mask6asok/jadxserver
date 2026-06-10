@@ -1,5 +1,6 @@
 package jadx.server.tools
 
+import jadx.server.config.TransportMode
 import jadx.server.engine.DecompiledApk
 import jadx.server.mcp.McpToolDef
 import jadx.server.mcp.ToolResult
@@ -49,7 +50,7 @@ class ToolRegistry private constructor(
     }
 
     companion object {
-        fun build(state: ServerState): ToolRegistry {
+        fun build(state: ServerState, transport: TransportMode): ToolRegistry {
             val serverHandlers = linkedMapOf<String, ServerToolHandler>()
             val analysisHandlers = linkedMapOf<String, AnalysisToolHandler>()
             val defs = mutableListOf<McpToolDef>()
@@ -57,7 +58,9 @@ class ToolRegistry private constructor(
             // ── Server tools ──
             for (def in ServerTools.definitions()) defs += def
             serverHandlers["upload_file"] = ServerToolHandler(ServerTools::uploadFile)
-            serverHandlers["register_file"] = ServerToolHandler(ServerTools::registerFile)
+            if (transport == TransportMode.STDIO) {
+                serverHandlers["register_file"] = ServerToolHandler(ServerTools::registerFile)
+            }
             serverHandlers["list_files"] = ServerToolHandler(ServerTools::listFiles)
             serverHandlers["list_instances"] = ServerToolHandler(ServerTools::listInstances)
             serverHandlers["server_health"] = ServerToolHandler(ServerTools::serverHealth)

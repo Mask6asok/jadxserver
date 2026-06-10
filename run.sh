@@ -1,2 +1,2 @@
 #!/bin/zsh
-java -jar build/libs/jadx-server-0.1.0-all.jar --listen 127.0.0.1:7789
+java -jar backup/jadx-server-0.1.1-all.jar --listen 127.0.0.1:7789

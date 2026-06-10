@@ -4,6 +4,7 @@ import jadx.server.config.ServerConfig
 import jadx.server.engine.DecompiledApk
 import jadx.server.engine.EngineOptions
 import jadx.server.engine.MockEngine
+import jadx.server.config.TransportMode
 import jadx.server.mcp.ToolResult
 import jadx.server.server.ServerState
 import jadx.server.tools.ToolRegistry
@@ -24,7 +25,7 @@ class ToolRegistryTest {
         tempDir = Files.createTempDirectory("jadx-test-registry")
         val config = ServerConfig(uploadDir = tempDir)
         state = ServerState(config)
-        registry = ToolRegistry.build(state)
+        registry = ToolRegistry.build(state, TransportMode.STDIO)
     }
 
     @AfterTest

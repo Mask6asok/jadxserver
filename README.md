@@ -62,7 +62,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 | 工具 | 说明 |
 |------|------|
 | `upload_file` | 获取上传 URL 和上传说明 |
-| `register_file` | 注册已拷贝到上传目录的文件（stdio 模式） |
+| `register_file` | 注册已拷贝到上传目录的文件（仅 stdio 模式可用，HTTP 不暴露） |
 | `list_files` | 列出已知二进制文件（已上传或之前打开过），支持过滤 |
 | `list_instances` | 列出池中所有活跃引擎实例 |
 | `server_health` | 检查服务端健康：运行时间、内存、实例数 |
@@ -130,7 +130,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew shadowJar
 ```
 
-输出：`build/libs/jadx-server-0.1.0-all.jar`（约 25MB）
+输出：`build/libs/jadx-server-0.1.1-all.jar`（约 25MB）
 
 **分发包**（启动脚本 + 独立依赖 JAR）：
 
@@ -145,9 +145,9 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 **通过 fat JAR**：
 
 ```bash
-java -jar build/libs/jadx-server-0.1.0-all.jar
-java -jar build/libs/jadx-server-0.1.0-all.jar --xref-mode jadx
-java -jar build/libs/jadx-server-0.1.0-all.jar --stdio
+java -jar build/libs/jadx-server-0.1.1-all.jar
+java -jar build/libs/jadx-server-0.1.1-all.jar --xref-mode jadx
+java -jar build/libs/jadx-server-0.1.1-all.jar --stdio
 ```
 
 **通过分发脚本**：
@@ -168,8 +168,8 @@ build/install/jadx-server/bin/jadx-server --stdio
 {
   "mcpServers": {
     "jadx-server": {
-      "command": "java",
-      "args": ["-jar", "/path/to/jadx-server-0.1.0-all.jar", "--stdio"]
+    "command": "java",
+    "args": ["-jar", "/path/to/jadx-server-0.1.1-all.jar", "--stdio"]
     }
   }
 }
@@ -180,7 +180,7 @@ build/install/jadx-server/bin/jadx-server --stdio
 先在终端启动 jadx-server，再添加到配置：
 
 ```bash
-java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.1-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -203,7 +203,7 @@ java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
   "mcpServers": {
     "jadx-server": {
       "type": "local",
-      "command": ["java", "-jar", "/path/to/jadx-server-0.1.0-all.jar", "--stdio"]
+    "command": ["java", "-jar", "/path/to/jadx-server-0.1.1-all.jar", "--stdio"]
     }
   }
 }
@@ -212,7 +212,7 @@ java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
 #### OpenCode（HTTP）
 
 ```bash
-java -jar jadx-server-0.1.0-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.1-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -240,6 +240,8 @@ curl -X POST http://127.0.0.1:8080/upload \
 或者直接用 MCP 客户端调用 `upload_file`，服务端会返回完整的上传 URL，用返回的 `file_hash` 调用分析工具。
 
 #### STDIO 模式
+
+> 说明：stdio 模式目前未经过充分测试，优先建议使用 HTTP 模式。
 
 1. 调用 `upload_file`，服务端返回 `target_dir`（上传目录的绝对路径）
 2. 将 APK/JAR 文件拷贝到该目录

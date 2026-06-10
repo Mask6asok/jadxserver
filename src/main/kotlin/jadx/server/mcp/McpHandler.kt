@@ -14,6 +14,8 @@ import jadx.server.engine.DecompiledApk
 import jadx.server.engine.EngineOptions
 import jadx.server.server.AcquireResult
 import jadx.server.server.ServerState
+import jadx.server.config.TransportMode
+import jadx.server.tools.CoreTools
 import jadx.server.tools.ToolRegistry
 import jadx.server.util.getBoolean
 import kotlinx.serialization.json.*
@@ -22,11 +24,11 @@ import org.slf4j.LoggerFactory
 
 class McpHandler(private val state: ServerState) {
     private val logger = LoggerFactory.getLogger(McpHandler::class.java)
-    private val toolRegistry = ToolRegistry.build(state)
+    private val toolRegistry = ToolRegistry.build(state, state.config.transport)
 
     fun createServer(): Server {
         val server = Server(
-            Implementation(name = "jadx-server", version = "0.1.0"),
+            Implementation(name = "jadx-server", version = "0.1.1"),
             ServerOptions(
                 capabilities = ServerCapabilities(
                     tools = ServerCapabilities.Tools(listChanged = true)
@@ -64,7 +66,9 @@ class McpHandler(private val state: ServerState) {
                     ?: throw IllegalArgumentException("Missing required parameter: file_hash")
                 val background = args.getBoolean("background", false)
                 val sessionId = extractSessionId(conn)
-                if (background) {
+                if (name == "analysis_status") {
+                    toCallToolResult(CoreTools.analysisStatus(state, fileHash))
+                } else if (background) {
                     handleBackgroundAnalysis(name, fileHash, args, sessionId)
                 } else {
                     handleSyncAnalysis(name, fileHash, args, sessionId)
@@ -83,8 +87,12 @@ class McpHandler(private val state: ServerState) {
         args: JsonObject,
         sessionId: String
     ): CallToolResult {
-        val sourceDir = state.fileIndex.resolve(fileHash)?.let { entry ->
-            state.config.uploadDir.resolve("binary").resolve(entry.md5).resolve("cache")
+        val sourceDir = if (toolName == "get_manifest") {
+            null
+        } else {
+            state.fileIndex.resolve(fileHash)?.let { entry ->
+                state.config.uploadDir.resolve("binary").resolve(entry.md5).resolve("cache")
+            }
         }
         val engineOptions = EngineOptions(sourceDir = sourceDir, xrefMode = state.config.xrefMode)
 
