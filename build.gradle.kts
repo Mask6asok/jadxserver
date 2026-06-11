@@ -69,6 +69,7 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    jvmArgs("-Xms256M", "-Xmx4G", "-XX:+UseG1GC")
 }
 
 tasks.shadowJar {
