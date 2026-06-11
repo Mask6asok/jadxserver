@@ -26,7 +26,10 @@ data class FileEntry(
     val path: String,
     val fileSize: Long,
     val storedAt: String,
-    var status: FileStatus = FileStatus.UPLOADED
+    var status: FileStatus = FileStatus.UPLOADED,
+    var projectFilePath: String? = null,
+    var cacheDirPath: String? = null,
+    var entryType: String = "binary"
 )
 
 @Serializable
@@ -98,6 +101,13 @@ class FileIndex(private val uploadDir: Path? = null) {
 
     fun updateStatus(hash: String, status: FileStatus) {
         entries[hash]?.status = status
+        autoPersist()
+    }
+
+    fun updateProjectPaths(hash: String, projectFilePath: Path?, cacheDirPath: Path?) {
+        val entry = entries[hash] ?: return
+        entry.projectFilePath = projectFilePath?.toAbsolutePath()?.normalize()?.toString()
+        entry.cacheDirPath = cacheDirPath?.toAbsolutePath()?.normalize()?.toString()
         autoPersist()
     }
 

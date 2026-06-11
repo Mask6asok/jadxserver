@@ -2,8 +2,8 @@ package jadx.server.engine
 
 import jadx.api.JadxArgs
 import jadx.api.JadxDecompiler
+import jadx.api.impl.InMemoryCodeCache
 import jadx.api.ResourceType
-import jadx.api.impl.NoOpCodeCache
 import jadx.api.usage.impl.EmptyUsageInfoCache
 import jadx.api.usage.impl.InMemoryUsageInfoCache
 import jadx.server.config.XrefMode
@@ -78,11 +78,15 @@ class JadxEngine : DecompilerEngine {
     override fun open(file: Path, options: EngineOptions): EngineInstance {
         val sourceDir = options.sourceDir
         val args = JadxArgs().apply {
-            inputFiles = mutableListOf(file.toFile())
+            inputFiles = (options.inputFiles ?: listOf(file)).map { it.toFile() }.toMutableList()
             threadsCount = options.threads
             isDeobfuscationOn = options.deobfuscate
             isSkipResources = options.skipResources
-            codeCache = NoOpCodeCache.INSTANCE
+            codeCache = if (sourceDir != null) {
+                ProjectDiskCodeCache(sourceDir)
+            } else {
+                InMemoryCodeCache()
+            }
             usageInfoCache = if (options.xrefMode == XrefMode.JADX) InMemoryUsageInfoCache() else EmptyUsageInfoCache()
             if (sourceDir != null) {
                 outDir = sourceDir.toFile()
@@ -90,6 +94,9 @@ class JadxEngine : DecompilerEngine {
             if (options.classFilter != null) {
                 val filterPattern = options.classFilter
                 classFilter = java.util.function.Predicate { it.contains(filterPattern) }
+            }
+            if (options.pluginOptions.isNotEmpty()) {
+                pluginOptions.putAll(options.pluginOptions)
             }
         }
 
@@ -102,20 +109,8 @@ class JadxEngine : DecompilerEngine {
 
         if (sourceDir != null) {
             val srcOutDir = sourceDir.resolve("sources").toFile()
-            if (!srcOutDir.exists() || srcOutDir.listFiles()?.isEmpty() != false) {
-                srcOutDir.mkdirs()
-                args.outDirSrc = srcOutDir
-                try {
-                    logger.info("Saving decompiled sources to: {}", srcOutDir.absolutePath)
-                    decompiler.saveSources()
-                    logger.info("Sources saved successfully")
-                } catch (e: Exception) {
-                    logger.warn("Failed to save sources to disk, will use in-memory fallback: {}", e.message)
-                }
-            } else {
-                logger.info("Source cache already exists at {}, skipping saveSources", srcOutDir.absolutePath)
-                args.outDirSrc = srcOutDir
-            }
+            srcOutDir.mkdirs()
+            args.outDirSrc = srcOutDir
         }
 
         val apk = DecompiledApk(decompiler, classMap, resourceList, apkMetadata, sourceDir, options.xrefMode)

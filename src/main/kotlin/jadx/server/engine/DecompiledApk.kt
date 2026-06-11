@@ -8,6 +8,9 @@ import jadx.api.ResourceFile
 import jadx.api.ResourceType
 import jadx.core.xmlgen.ResContainer
 import jadx.server.config.XrefMode
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.Closeable
 import java.nio.file.Files
@@ -104,13 +107,10 @@ class DecompiledApk(
 
     fun searchCode(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
-        if (sourceDir != null) {
-            return searchCodeFromDisk(query, limit)
-        }
         val results = mutableListOf<SearchMatch>()
-        for ((className, cls) in classes) {
+        for ((className, _) in classes) {
             if (results.size >= limit) break
-            val code = try { cls.code } catch (_: Exception) { continue } ?: continue
+            val code = getClassCode(className) ?: continue
             code.lines().forEachIndexed { index, line ->
                 if (results.size >= limit) return@forEachIndexed
                 if (line.contains(query, ignoreCase = true)) {
@@ -123,14 +123,11 @@ class DecompiledApk(
 
     fun searchString(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
-        if (sourceDir != null) {
-            return searchStringFromDisk(query, limit)
-        }
         val pattern = Regex("\"[^\"]*${Regex.escape(query)}[^\"]*\"")
         val results = mutableListOf<SearchMatch>()
-        for ((className, cls) in classes) {
+        for ((className, _) in classes) {
             if (results.size >= limit) break
-            val code = try { cls.code } catch (_: Exception) { continue } ?: continue
+            val code = getClassCode(className) ?: continue
             code.lines().forEachIndexed { index, line ->
                 if (results.size >= limit) return@forEachIndexed
                 if (pattern.containsMatchIn(line)) {
@@ -166,15 +163,18 @@ class DecompiledApk(
     }
 
     private fun getClassXrefsJadx(className: String, limit: Int): List<XrefMatch> {
+        readXrefCache("class", className, limit)?.let { return it }
         val cls = classes[className] ?: return emptyList()
         val useIn = try { cls.getUseIn() } catch (_: Exception) { return emptyList() }
-        return useIn.take(limit).mapNotNull { node ->
+        val results = useIn.take(limit).mapNotNull { node ->
             when (node) {
                 is JavaClass -> XrefMatch(node.fullName, "", 0)
                 is JavaMethod -> XrefMatch(node.declaringClass.fullName, node.name, 0)
                 else -> null
             }
         }
+        writeXrefCache("class", className, results)
+        return results
     }
 
     fun getMethodXrefs(className: String, methodName: String, direction: String = "both", limit: Int = 100, mode: String? = null): List<XrefMatch> {
@@ -217,6 +217,8 @@ class DecompiledApk(
     }
 
     private fun getMethodXrefsJadx(className: String, methodName: String, direction: String, limit: Int): List<XrefMatch> {
+        val cacheKey = "$className#$methodName#$direction"
+        readXrefCache("method", cacheKey, limit)?.let { return it }
         val cls = classes[className] ?: return emptyList()
         val results = mutableListOf<XrefMatch>()
 
@@ -248,6 +250,7 @@ class DecompiledApk(
             }
         }
 
+        writeXrefCache("method", cacheKey, results)
         return results
     }
 
@@ -288,52 +291,34 @@ class DecompiledApk(
         }
     }
 
-    private fun searchCodeFromDisk(query: String, limit: Int): List<SearchMatch> {
-        val results = mutableListOf<SearchMatch>()
-        val srcDir = sourceDir!!.resolve("sources")
-        if (!Files.exists(srcDir)) return results
-
-        walkJavaFiles(srcDir) { className, content ->
-            if (results.size >= limit) return@walkJavaFiles
-            content.lines().forEachIndexed { index, line ->
-                if (results.size >= limit) return@forEachIndexed
-                if (line.contains(query, ignoreCase = true)) {
-                    results.add(SearchMatch(className, index + 1, line.trim()))
-                }
-            }
+    private fun readXrefCache(kind: String, key: String, limit: Int): List<XrefMatch>? {
+        val cacheFile = xrefCacheFile(kind, key) ?: return null
+        if (!Files.exists(cacheFile)) return null
+        return try {
+            val data = xrefJson.decodeFromString<XrefCacheFile>(Files.readString(cacheFile))
+            data.results.take(limit)
+        } catch (_: Exception) {
+            null
         }
-        return results
     }
 
-    private fun searchStringFromDisk(query: String, limit: Int): List<SearchMatch> {
-        val results = mutableListOf<SearchMatch>()
-        val srcDir = sourceDir!!.resolve("sources")
-        if (!Files.exists(srcDir)) return results
-
-        val pattern = Regex("\"[^\"]*${Regex.escape(query)}[^\"]*\"")
-        walkJavaFiles(srcDir) { className, content ->
-            if (results.size >= limit) return@walkJavaFiles
-            content.lines().forEachIndexed { index, line ->
-                if (results.size >= limit) return@forEachIndexed
-                if (pattern.containsMatchIn(line)) {
-                    results.add(SearchMatch(className, index + 1, line.trim()))
-                }
-            }
+    private fun writeXrefCache(kind: String, key: String, results: List<XrefMatch>) {
+        val cacheFile = xrefCacheFile(kind, key) ?: return
+        try {
+            Files.createDirectories(cacheFile.parent)
+            Files.writeString(cacheFile, xrefJson.encodeToString(XrefCacheFile(results)))
+        } catch (_: Exception) {
         }
-        return results
     }
 
-    private inline fun walkJavaFiles(baseDir: Path, crossinline visitor: (className: String, content: String) -> Unit) {
-        Files.walk(baseDir)
-            .filter { it.toString().endsWith(".java") }
-            .forEach { file ->
-                try {
-                    val relative = baseDir.relativize(file).toString()
-                    val className = relative.removeSuffix(".java").replace('/', '.')
-                    val content = Files.readString(file)
-                    visitor(className, content)
-                } catch (_: Exception) { }
+    private fun xrefCacheFile(kind: String, key: String): Path? {
+        val dir = sourceDir ?: return null
+        val safeName = buildString {
+            key.forEach { ch ->
+                append(if (ch.isLetterOrDigit() || ch == '.' || ch == '_' || ch == '-') ch else '_')
             }
+        }
+        return dir.resolve("usage").resolve(kind).resolve("$safeName.json")
     }
 
     // --- Private helpers ---
@@ -500,6 +485,7 @@ data class SearchMatch(
     val content: String
 )
 
+@Serializable
 data class XrefMatch(
     val className: String,
     val methodName: String,
@@ -511,3 +497,13 @@ data class ResourceInfo(
     val type: String,
     val path: String
 )
+
+@Serializable
+private data class XrefCacheFile(
+    val results: List<XrefMatch>
+)
+
+private val xrefJson = Json {
+    prettyPrint = false
+    ignoreUnknownKeys = true
+}

@@ -61,6 +61,7 @@ class ToolRegistry private constructor(
             if (transport == TransportMode.STDIO) {
                 serverHandlers["register_file"] = ServerToolHandler(ServerTools::registerFile)
             }
+            serverHandlers["save_project"] = ServerToolHandler(ServerTools::saveProject)
             serverHandlers["list_files"] = ServerToolHandler(ServerTools::listFiles)
             serverHandlers["list_instances"] = ServerToolHandler(ServerTools::listInstances)
             serverHandlers["server_health"] = ServerToolHandler(ServerTools::serverHealth)

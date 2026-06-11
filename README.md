@@ -57,12 +57,13 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 
 ## MCP 工具参考
 
-### 服务端工具（9 个）
+### 服务端工具（10 个）
 
 | 工具 | 说明 |
 |------|------|
 | `upload_file` | 获取上传 URL 和上传说明 |
 | `register_file` | 注册已拷贝到上传目录的文件（仅 stdio 模式可用，HTTP 不暴露） |
+| `save_project` | 为指定文件生成/刷新 upstream 兼容的 `project.jadx` |
 | `list_files` | 列出已知二进制文件（已上传或之前打开过），支持过滤 |
 | `list_instances` | 列出池中所有活跃引擎实例 |
 | `server_health` | 检查服务端健康：运行时间、内存、实例数 |
@@ -239,6 +240,8 @@ curl -X POST http://127.0.0.1:8080/upload \
 
 或者直接用 MCP 客户端调用 `upload_file`，服务端会返回完整的上传 URL，用返回的 `file_hash` 调用分析工具。
 
+如需持久化为 upstream 风格项目，可额外调用 `save_project(file_hash=...)`，服务端会在 `uploads/binary/<md5>/project.jadx` 生成项目文件，并将缓存目录固定为同目录下的 `project.cache/`。
+
 #### STDIO 模式
 
 > 说明：stdio 模式目前未经过充分测试，优先建议使用 HTTP 模式。
@@ -302,11 +305,13 @@ data class ServerConfig(
 
 1. **上传** — 客户端通过 `POST /upload`（HTTP）或 `upload_file` → `register_file`（STDIO）上传 APK/JAR。服务端计算 MD5 哈希并建立索引。
 
-2. **反编译** — 客户端调用 `decompile_apk` 并传入文件哈希。引擎池获取或创建 `JadxDecompiler` 实例，将所有类加载到内存。耗时反编译作为后台任务执行。支持 APK、JAR、DEX、AAB 等多种格式。
+2. **项目保存** — 可调用 `save_project(file_hash=...)` 在 `uploads/binary/<md5>/project.jadx` 生成 upstream 兼容的项目文件；其 `cacheDir` 固定指向同目录下的 `project.cache/`。
 
-3. **分析** — 客户端调用分析工具（`get_class_code`、`search_code`、`class_xrefs` 等）并传入文件哈希。池复用已有实例 —— 无需重新反编译。
+3. **反编译** — 客户端调用 `decompile_apk` 并传入文件哈希。引擎池获取或创建 `JadxDecompiler` 实例，将所有类加载到内存。若 `uploads/binary/<md5>/project.jadx` 已存在，则后续分析优先从该项目文件及其 `project.cache/` 恢复。支持 APK、JAR、DEX、AAB 等多种格式。
 
-4. **驱逐** — 空闲实例在配置的超时后自动关闭，释放 JVM 堆内存。文件索引在重启后持久化保留。
+4. **分析** — 客户端调用分析工具（`get_class_code`、`search_code`、`class_xrefs` 等）并传入文件哈希。源码采用按需生成：首次访问某个类时才会将该类代码写入 `project.cache/code/sources/`，而不是在打开 APK 时全量导出全部源码。代码搜索采用与 `jadx-gui` 类似的类级搜索路径：优先命中 code cache，未命中时才按需生成该类代码。`JADX` 模式的 xref 查询结果会额外缓存到 `project.cache/code/usage/`，以便后续查询复用。池复用已有实例 —— 无需重新反编译。
+
+5. **驱逐** — 空闲实例在配置的超时后自动关闭，释放 JVM 堆内存。文件索引以及 `project.jadx` 路径在重启后持久化保留。
 
 ## 技术栈
 

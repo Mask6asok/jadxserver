@@ -20,6 +20,9 @@ data class EngineOptions(
     val skipResources: Boolean = false,
     val classFilter: String? = null,
     val sourceDir: java.nio.file.Path? = null,
+    val projectFile: java.nio.file.Path? = null,
+    val inputFiles: List<java.nio.file.Path>? = null,
+    val pluginOptions: Map<String, String> = emptyMap(),
     val xrefMode: XrefMode = XrefMode.JADX
 )
 

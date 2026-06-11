@@ -3,6 +3,7 @@ package jadx.server.tools
 import jadx.server.mcp.McpToolDef
 import jadx.server.mcp.ToolResult
 import jadx.server.config.TransportMode
+import jadx.server.project.JadxProjectService
 import jadx.server.server.FileStatus
 import jadx.server.server.InstanceInfo
 import jadx.server.server.ServerState
@@ -22,11 +23,14 @@ import java.time.Duration
 
 object ServerTools {
     private val logger = LoggerFactory.getLogger(ServerTools::class.java)
+    private val projectService = JadxProjectService()
 
     fun definitions(): List<McpToolDef> = listOf(
         McpToolDef("upload_file", "Get upload URL and instructions for uploading a binary file"),
         McpToolDef("register_file", "Register a file that was copied to the upload directory (stdio mode)")
             .param("file_path", "string", "Absolute path to the copied file", true),
+        McpToolDef("save_project", "Generate or refresh upstream-compatible project.jadx for a file")
+            .param("file_hash", "string", "Short hash or MD5 prefix of the uploaded file", true),
         McpToolDef("list_files", "List known binaries (uploaded or previously opened)")
             .param("name", "string", "Filter by basename (substring match)", false)
             .param("md5", "string", "Filter by MD5 hash (exact match)", false)
@@ -112,6 +116,29 @@ object ServerTools {
                     })
                 }
             })
+        }
+    }
+
+    fun saveProject(args: JsonObject, sessionId: String, state: ServerState): ToolResult {
+        val fileHash = args.getString("file_hash")
+            ?: return ToolResult.badParams("Missing required parameter: file_hash")
+        val entry = state.fileIndex.resolve(fileHash)
+            ?: return ToolResult.notFound("File not found: $fileHash")
+
+        val binaryPath = Path.of(entry.path)
+        val binaryDir = binaryPath.parent
+        val projectFile = binaryDir.resolve("project.jadx")
+        val cacheDir = binaryDir.resolve("project.cache")
+
+        val project = projectService.createDefault(binaryPath, cacheDir, projectFile)
+        projectService.save(projectFile, project)
+        state.fileIndex.updateProjectPaths(entry.hash, projectFile, cacheDir)
+
+        return ToolResult.success {
+            put("file_hash", JsonPrimitive(entry.hash))
+            put("project_file", JsonPrimitive(projectFile.toAbsolutePath().normalize().toString()))
+            put("cache_dir", JsonPrimitive(cacheDir.toAbsolutePath().normalize().toString()))
+            put("status", JsonPrimitive("saved"))
         }
     }
 

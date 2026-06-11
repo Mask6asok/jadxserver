@@ -16,15 +16,19 @@ import jadx.server.server.AcquireResult
 import jadx.server.server.ServerState
 import jadx.server.config.TransportMode
 import jadx.server.tools.CoreTools
+import jadx.server.project.JadxProjectService
 import jadx.server.tools.ToolRegistry
 import jadx.server.util.getBoolean
 import kotlinx.serialization.json.*
 import kotlinx.serialization.json.JsonPrimitive
 import org.slf4j.LoggerFactory
+import java.nio.file.Files
+import java.nio.file.Path
 
 class McpHandler(private val state: ServerState) {
     private val logger = LoggerFactory.getLogger(McpHandler::class.java)
     private val toolRegistry = ToolRegistry.build(state, state.config.transport)
+    private val projectService = JadxProjectService()
 
     fun createServer(): Server {
         val server = Server(
@@ -87,14 +91,40 @@ class McpHandler(private val state: ServerState) {
         args: JsonObject,
         sessionId: String
     ): CallToolResult {
-        val sourceDir = if (toolName == "get_manifest") {
-            null
-        } else {
-            state.fileIndex.resolve(fileHash)?.let { entry ->
-                state.config.uploadDir.resolve("binary").resolve(entry.md5).resolve("cache")
+        val entry = state.fileIndex.resolve(fileHash)
+            ?: return toCallToolResult(ToolResult.notFound("File not found: $fileHash"))
+
+        val projectFile = entry.projectFilePath?.let { Path.of(it) }
+        val resolvedProject = if (projectFile != null && Files.exists(projectFile)) {
+            try {
+                projectService.load(projectFile)
+            } catch (e: Exception) {
+                return toCallToolResult(ToolResult.internal("Failed to load project file: ${e.message}"))
             }
+        } else {
+            null
         }
-        val engineOptions = EngineOptions(sourceDir = sourceDir, xrefMode = state.config.xrefMode)
+
+        val sourceDir = when {
+            toolName == "get_manifest" -> null
+            resolvedProject != null -> projectService.resolveProjectCacheDir(projectFile!!, resolvedProject)?.resolve("code")
+            entry.cacheDirPath != null -> Path.of(entry.cacheDirPath!!).resolve("code")
+            else -> state.config.uploadDir.resolve("binary").resolve(entry.md5).resolve("project.cache").resolve("code")
+        }
+
+        val inputFiles = if (resolvedProject != null) {
+            listOf(projectService.resolveProjectBinary(projectFile!!, resolvedProject))
+        } else {
+            null
+        }
+
+        val engineOptions = EngineOptions(
+            sourceDir = sourceDir,
+            projectFile = projectFile,
+            inputFiles = inputFiles,
+            pluginOptions = resolvedProject?.pluginOptions ?: emptyMap(),
+            xrefMode = state.config.xrefMode
+        )
 
         val acquireResult = acquireWithRetry(sessionId, fileHash, engineOptions)
             ?: return toCallToolResult(ToolResult.error(-32002, "All workers busy after retrying, try again later"))
@@ -113,6 +143,18 @@ class McpHandler(private val state: ServerState) {
                     state.engine.open(acquireResult.file, acquireResult.options)
                 } catch (e: Exception) {
                     return toCallToolResult(ToolResult.internal("Failed to open decompiler: ${e.message}"))
+                }
+                if (projectFile == null && sourceDir != null) {
+                    val binaryDir = Path.of(entry.path).parent
+                    val generatedProjectFile = binaryDir.resolve("project.jadx")
+                    val generatedCacheDir = binaryDir.resolve("project.cache")
+                    try {
+                        val project = projectService.createDefault(Path.of(entry.path), generatedCacheDir, generatedProjectFile)
+                        projectService.save(generatedProjectFile, project)
+                        state.fileIndex.updateProjectPaths(entry.hash, generatedProjectFile, generatedCacheDir)
+                    } catch (e: Exception) {
+                        logger.warn("Failed to save project file for {}: {}", entry.hash, e.message)
+                    }
                 }
                 state.enginePool.insert(sessionId, fileHash, instance)
                 try {
