@@ -154,9 +154,9 @@ java -jar build/libs/jadx-server-0.1.1-all.jar --stdio
 **通过分发脚本**：
 
 ```bash
-build/install/jadx-server/bin/jadx-server
-build/install/jadx-server/bin/jadx-server --xref-mode jadx
-build/install/jadx-server/bin/jadx-server --stdio
+jadx-server
+jadx-server --xref-mode jadx
+jadx-server --stdio
 ```
 
 ### MCP 客户端配置
