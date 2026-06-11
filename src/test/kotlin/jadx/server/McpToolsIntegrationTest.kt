@@ -8,7 +8,6 @@ import jadx.server.mcp.ToolResult
 import jadx.server.server.AcquireResult
 import jadx.server.server.ServerState
 import jadx.server.tools.ToolRegistry
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.nio.file.Files
@@ -16,7 +15,10 @@ import java.nio.file.Path
 import kotlin.test.*
 
 /**
- * Integration test for MCP tools against a real APK fixture.
+ * Integration test for MCP analysis tools + fixture immutability.
+ *
+ * Analysis (decompile) tests remain here; server-tool tests moved to
+ * McpServerToolsTest.kt.
  *
  * Uses a single deterministic fixture: test/apps/com.huawei.hwread.dz.apk.
  * FileIndex.add() uses copy semantics (Task 1 fix), so the source stays
@@ -50,16 +52,6 @@ class McpToolsIntegrationTest {
     fun tearDown() {
         state.shutdown()
         tempDir.toFile().deleteRecursively()
-    }
-
-    @Test
-    fun testServerHealth() {
-        val result = registry.executeServer("server_health", buildJsonObject {}, "session1", state)
-
-        assertTrue(result is ToolResult.Success)
-        val data = result.data
-        assertTrue(data.containsKey("status"))
-        assertEquals("healthy", (data["status"] as? JsonPrimitive)?.content)
     }
 
     @Test
@@ -106,20 +98,6 @@ class McpToolsIntegrationTest {
         } finally {
             state.enginePool.release(instance)
         }
-    }
-
-    @Test
-    fun testListFiles() {
-        val result = registry.executeServer("list_files", buildJsonObject {}, "session1", state)
-
-        assertTrue(result is ToolResult.Success)
-        val data = result.data
-        assertTrue(data.containsKey("files"))
-
-        val filesElement = data["files"]
-        assertNotNull(filesElement)
-        assertTrue(filesElement is JsonArray, "Expected files to be a JsonArray")
-        assertTrue(filesElement.size > 0, "Expected at least one file in the index")
     }
 
     @Test
