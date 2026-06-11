@@ -121,4 +121,35 @@ class McpToolsIntegrationTest {
         assertTrue(filesElement is JsonArray, "Expected files to be a JsonArray")
         assertTrue(filesElement.size > 0, "Expected at least one file in the index")
     }
+
+    @Test
+    fun testFixtureImmutability() {
+        val apkFile = Path.of(System.getProperty("user.dir"))
+            .resolve("test/apps/com.huawei.hwread.dz.apk")
+        assertTrue(Files.exists(apkFile), "Fixture file must exist")
+
+        val beforeChecksum = sha256(apkFile)
+        val beforeSize = Files.size(apkFile)
+
+        // Re-add via FileIndex — uses copy semantics, source must be untouched
+        state.fileIndex.add(apkFile, tempDir)
+
+        val afterChecksum = sha256(apkFile)
+        val afterSize = Files.size(apkFile)
+
+        assertEquals(beforeChecksum, afterChecksum, "Fixture SHA-256 must not change after FileIndex.add()")
+        assertEquals(beforeSize, afterSize, "Fixture file size must not change after FileIndex.add()")
+    }
+
+    private fun sha256(file: Path): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(file).use { input ->
+            val buf = ByteArray(8192)
+            var read: Int
+            while (input.read(buf).also { read = it } != -1) {
+                digest.update(buf, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
 }
