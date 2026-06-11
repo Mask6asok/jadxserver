@@ -41,9 +41,10 @@ class FileIndex(private val uploadDir: Path? = null) {
     private val entries = ConcurrentHashMap<String, FileEntry>()
 
     /**
-     * Add a file to the index. If [moveToDir] is provided, the file is moved into
+     * Add a file to the index. If [moveToDir] is provided, the file is copied into
      * an MD5-based subdirectory (moveToDir/binary/<md5>/<originalName>) to prevent
      * name collisions between different files with the same filename.
+     * The original source file is preserved — only an indexed copy is placed in the target directory.
      */
     fun add(file: Path, moveToDir: Path? = null): FileEntry {
         val bytes = Files.readAllBytes(file)
