@@ -6,6 +6,9 @@ import jadx.server.mcp.McpToolDef
 import jadx.server.mcp.ToolResult
 import jadx.server.server.ServerState
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import org.slf4j.LoggerFactory
 
 /**
  * Central registry that maps tool names to handler functions.
@@ -16,6 +19,8 @@ class ToolRegistry private constructor(
     val analysisTools: Map<String, AnalysisToolHandler>,
     val allDefinitions: List<McpToolDef>
 ) {
+    private val logger = LoggerFactory.getLogger(ToolRegistry::class.java)
+
     fun interface ServerToolHandler {
         fun handle(args: JsonObject, sessionId: String, state: ServerState): ToolResult
     }
@@ -32,21 +37,63 @@ class ToolRegistry private constructor(
     fun executeAnalysis(name: String, apk: DecompiledApk, args: JsonObject): ToolResult {
         val handler = analysisTools[name]
             ?: return ToolResult.error(-32601, "Unknown analysis tool: $name")
-        return try {
+        val start = System.currentTimeMillis()
+        val result = try {
             handler.handle(apk, args)
         } catch (e: Exception) {
+            logger.warn("[ANALYSIS] {} {}ms args={} -> ERROR: {}", name, System.currentTimeMillis() - start, compactArgs(args), e.message)
             ToolResult.internal("Tool execution error in $name: ${e.message}")
         }
+        logger.info("[ANALYSIS] {} {}ms args={} -> {}", name, System.currentTimeMillis() - start, compactArgs(args), compactResult(result))
+        return result
     }
 
     fun executeServer(name: String, args: JsonObject, sessionId: String, state: ServerState): ToolResult {
         val handler = serverTools[name]
             ?: return ToolResult.error(-32601, "Unknown server tool: $name")
-        return try {
+        val start = System.currentTimeMillis()
+        val result = try {
             handler.handle(args, sessionId, state)
         } catch (e: Exception) {
+            logger.warn("[SERVER] {} {}ms session={} args={} -> ERROR: {}", name, System.currentTimeMillis() - start, sessionId.take(12), compactArgs(args), e.message)
             ToolResult.internal("Tool execution error in $name: ${e.message}")
         }
+        logger.info("[SERVER] {} {}ms session={} args={} -> {}", name, System.currentTimeMillis() - start, sessionId.take(12), compactArgs(args), compactResult(result))
+        return result
+    }
+
+    private fun compactArgs(args: JsonObject): String {
+        val s = args.toString()
+        return if (s.length <= 150) s else s.take(147) + "..."
+    }
+
+    private val meaningfulKeys = setOf(
+        "match_count", "count", "ref_count", "class_count", "method_count",
+        "status", "ready", "closed_count", "remaining",
+        "package_name", "query", "pattern", "filter", "file_hash",
+        "class_name", "method_name", "name", "tool"
+    )
+
+    private fun compactResult(result: ToolResult): String = when (result) {
+        is ToolResult.Success -> {
+            val parts = mutableListOf<String>()
+            for (key in meaningfulKeys) {
+                val v = result.data[key] ?: continue
+                val s = when (v) {
+                    is JsonPrimitive -> v.content
+                    is kotlinx.serialization.json.JsonArray -> "[${v.size}]"
+                    else -> continue
+                }
+                parts += "$key=$s"
+                if (parts.size >= 4) break
+            }
+            "OK(${parts.joinToString(" ")})"
+        }
+        is ToolResult.Error -> {
+            val msg = result.message.take(60)
+            "ERR(code=${result.code} ${if (msg.isNotEmpty()) msg else ""})"
+        }
+        else -> result.toString().take(100)
     }
 
     companion object {

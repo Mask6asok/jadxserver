@@ -28,6 +28,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger as LogbackLogger
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -44,6 +46,7 @@ fun main(args: Array<String>) {
     var cleanupInterval = Duration.ofSeconds(10)
     var maxCachedApks = 10
     var toolTimeout = Duration.ofMinutes(5)
+    var jadxVerbose = false
 
     var i = 0
     while (i < args.size) {
@@ -59,9 +62,16 @@ fun main(args: Array<String>) {
             "--cleanup-interval" -> { if (i+1 < args.size) cleanupInterval = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 10); i++ }
             "--max-cached-apks" -> { if (i+1 < args.size) maxCachedApks = args[i+1].toIntOrNull() ?: 10; i++ }
             "--tool-timeout" -> { if (i+1 < args.size) toolTimeout = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 300); i++ }
+            "--jadx-verbose" -> jadxVerbose = true
             "--help", "-h" -> { printHelp(); return }
         }
         i++
+    }
+
+    if (jadxVerbose) {
+        val jadxLogger = LoggerFactory.getLogger("jadx") as LogbackLogger
+        jadxLogger.level = Level.WARN
+        LoggerFactory.getLogger("jadx.server").info("jadx verbose logging enabled (level=WARN)")
     }
 
     val config = ServerConfig(
@@ -176,6 +186,7 @@ fun printHelp() {
           --upload-dir <path>        Upload directory (default: ./uploads)
           --tool-timeout <s>         Tool execution timeout in seconds (default: 300)
           --xref-mode <mode>         Cross-reference mode: text, jadx (default: jadx)
+          --jadx-verbose             Enable jadx.core library logging (default: OFF)
           --help, -h                 Show this help
 
         Examples:

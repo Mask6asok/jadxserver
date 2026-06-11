@@ -131,7 +131,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew shadowJar
 ```
 
-输出：`build/libs/jadx-server-0.1.1-all.jar`（约 25MB）
+输出：`build/libs/jadx-server-0.1.3-all.jar`（约 25MB）
 
 **分发包**（启动脚本 + 独立依赖 JAR）：
 
@@ -146,9 +146,9 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 **通过 fat JAR**：
 
 ```bash
-java -jar build/libs/jadx-server-0.1.1-all.jar
-java -jar build/libs/jadx-server-0.1.1-all.jar --xref-mode jadx
-java -jar build/libs/jadx-server-0.1.1-all.jar --stdio
+java -jar build/libs/jadx-server-0.1.3-all.jar
+java -jar build/libs/jadx-server-0.1.3-all.jar --xref-mode jadx
+java -jar build/libs/jadx-server-0.1.3-all.jar --stdio
 ```
 
 **通过分发脚本**：
@@ -170,7 +170,7 @@ jadx-server --stdio
   "mcpServers": {
     "jadx-server": {
     "command": "java",
-    "args": ["-jar", "/path/to/jadx-server-0.1.1-all.jar", "--stdio"]
+    "args": ["-jar", "/path/to/jadx-server-0.1.3-all.jar", "--stdio"]
     }
   }
 }
@@ -181,7 +181,7 @@ jadx-server --stdio
 先在终端启动 jadx-server，再添加到配置：
 
 ```bash
-java -jar jadx-server-0.1.1-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.3-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -204,7 +204,7 @@ java -jar jadx-server-0.1.1-all.jar --listen 127.0.0.1:8080
   "mcpServers": {
     "jadx-server": {
       "type": "local",
-    "command": ["java", "-jar", "/path/to/jadx-server-0.1.1-all.jar", "--stdio"]
+    "command": ["java", "-jar", "/path/to/jadx-server-0.1.3-all.jar", "--stdio"]
     }
   }
 }
@@ -213,7 +213,7 @@ java -jar jadx-server-0.1.1-all.jar --listen 127.0.0.1:8080
 #### OpenCode（HTTP）
 
 ```bash
-java -jar jadx-server-0.1.1-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.3-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json

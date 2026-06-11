@@ -8,6 +8,7 @@
     <logger name="jadx.server" level="DEBUG"/>
     <logger name="io.modelcontextprotocol" level="INFO"/>
     <logger name="io.ktor" level="INFO"/>
+    <logger name="jadx" level="OFF"/>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
