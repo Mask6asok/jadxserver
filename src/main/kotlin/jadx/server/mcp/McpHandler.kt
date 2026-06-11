@@ -13,6 +13,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import jadx.server.engine.DecompiledApk
 import jadx.server.engine.EngineOptions
 import jadx.server.server.AcquireResult
+import jadx.server.server.FileStatus
 import jadx.server.server.ServerState
 import jadx.server.config.TransportMode
 import jadx.server.tools.CoreTools
@@ -94,6 +95,8 @@ class McpHandler(private val state: ServerState) {
         val entry = state.fileIndex.resolve(fileHash)
             ?: return toCallToolResult(ToolResult.notFound("File not found: $fileHash"))
 
+        state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZING)
+
         val projectFile = entry.projectFilePath?.let { Path.of(it) }
         val resolvedProject = if (projectFile != null && Files.exists(projectFile)) {
             try {
@@ -133,7 +136,12 @@ class McpHandler(private val state: ServerState) {
             is AcquireResult.Found -> {
                 try {
                     val apk = acquireResult.instance.state as DecompiledApk
-                    toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                    val result = toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                    state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
+                    result
+                } catch (e: Exception) {
+                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                    throw e
                 } finally {
                     state.enginePool.release(acquireResult.instance)
                 }
@@ -142,6 +150,7 @@ class McpHandler(private val state: ServerState) {
                 val instance = try {
                     state.engine.open(acquireResult.file, acquireResult.options)
                 } catch (e: Exception) {
+                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                     return toCallToolResult(ToolResult.internal("Failed to open decompiler: ${e.message}"))
                 }
                 if (projectFile == null && sourceDir != null) {
@@ -159,13 +168,21 @@ class McpHandler(private val state: ServerState) {
                 state.enginePool.insert(sessionId, fileHash, instance)
                 try {
                     val apk = instance.state as DecompiledApk
-                    toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                    val result = toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                    state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
+                    result
+                } catch (e: Exception) {
+                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                    throw e
                 } finally {
                     state.enginePool.release(instance)
                 }
             }
             AcquireResult.Busy -> toCallToolResult(ToolResult.error(-32002, "All workers busy, retry later"))
-            AcquireResult.Full -> toCallToolResult(ToolResult.poolFull(state.config.maxInstances))
+            AcquireResult.Full -> {
+                state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                toCallToolResult(ToolResult.poolFull(state.config.maxInstances))
+            }
         }
     }
 
@@ -196,10 +213,9 @@ class McpHandler(private val state: ServerState) {
         val taskId = state.taskManager.create(toolName)
         Thread.ofVirtual().name("task-$taskId").start {
             try {
-                handleSyncAnalysis(toolName, fileHash, args, sessionId)
-                state.taskManager.complete(taskId, buildJsonObject {
-                    put("status", JsonPrimitive("completed"))
-                })
+                val result = handleSyncAnalysis(toolName, fileHash, args, sessionId)
+                val actualResult = extractTaskResult(result)
+                state.taskManager.complete(taskId, actualResult)
             } catch (e: Exception) {
                 state.taskManager.fail(taskId, e.message ?: "Unknown error")
             }
@@ -208,6 +224,24 @@ class McpHandler(private val state: ServerState) {
             put("task_id", JsonPrimitive(taskId))
             put("status", JsonPrimitive("running"))
         })
+    }
+
+    private fun extractTaskResult(result: CallToolResult): JsonObject {
+        val text = (result.content.firstOrNull() as? TextContent)?.text
+        return if (text != null) {
+            try {
+                Json.parseToJsonElement(text) as? JsonObject
+                    ?: buildJsonObject { put("raw_text", JsonPrimitive(text)) }
+            } catch (e: Exception) {
+                logger.warn("Failed to parse background task result as JSON: {}", e.message)
+                buildJsonObject {
+                    put("status", JsonPrimitive("completed"))
+                    put("raw_text", JsonPrimitive(text))
+                }
+            }
+        } else {
+            buildJsonObject { put("status", JsonPrimitive("completed")) }
+        }
     }
 
     private fun extractSessionId(conn: ClientConnection): String {
