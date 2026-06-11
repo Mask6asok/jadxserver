@@ -56,7 +56,7 @@ class FileIndex(private val uploadDir: Path? = null) {
             val md5Dir = moveToDir.resolve("binary").resolve(md5)
             Files.createDirectories(md5Dir)
             val target = md5Dir.resolve(originalName)
-            Files.move(file, target, StandardCopyOption.REPLACE_EXISTING)
+            Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING)
             target
         } else {
             file
