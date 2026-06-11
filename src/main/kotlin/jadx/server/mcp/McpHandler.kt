@@ -22,6 +22,9 @@ import jadx.server.tools.ToolRegistry
 import jadx.server.util.getBoolean
 import kotlinx.serialization.json.*
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -136,9 +139,15 @@ class McpHandler(private val state: ServerState) {
             is AcquireResult.Found -> {
                 try {
                     val apk = acquireResult.instance.state as DecompiledApk
-                    val result = toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                    val result = runBlocking {
+                        withTimeout(state.config.toolTimeout.toMillis()) {
+                            toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                        }
+                    }
                     state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                     result
+                } catch (e: TimeoutCancellationException) {
+                    toCallToolResult(ToolResult.internal("Tool execution timed out"))
                 } catch (e: Exception) {
                     state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                     throw e
@@ -168,9 +177,15 @@ class McpHandler(private val state: ServerState) {
                 state.enginePool.insert(sessionId, fileHash, instance)
                 try {
                     val apk = instance.state as DecompiledApk
-                    val result = toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                    val result = runBlocking {
+                        withTimeout(state.config.toolTimeout.toMillis()) {
+                            toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                        }
+                    }
                     state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                     result
+                } catch (e: TimeoutCancellationException) {
+                    toCallToolResult(ToolResult.internal("Tool execution timed out"))
                 } catch (e: Exception) {
                     state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                     throw e
