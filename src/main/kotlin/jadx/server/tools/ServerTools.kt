@@ -262,6 +262,11 @@ object ServerTools {
                 put("file_hash", JsonPrimitive(entry.hash))
                 put("status", JsonPrimitive(entry.status.name))
                 put("ready", JsonPrimitive(entry.status == FileStatus.ANALYZED))
+                if (entry.status == FileStatus.FAILED) {
+                    put("error_code", JsonPrimitive("FAILED"))
+                    put("error_reason", JsonPrimitive("analysis_failed"))
+                    put("error_message", JsonPrimitive("Previous analysis attempt failed"))
+                }
             }
         }
 

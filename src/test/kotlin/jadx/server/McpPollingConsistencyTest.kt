@@ -72,10 +72,7 @@ class McpPollingConsistencyTest {
          * TaskManager.fail() is only called on exception, not on error results.
          */
         val taskId = state.taskManager.create("decompile_apk")
-        state.taskManager.complete(taskId, buildJsonObject {
-            put("status", JsonPrimitive("completed"))
-            put("raw_text", JsonPrimitive("Tool execution timed out"))
-        })
+        state.taskManager.fail(taskId, "Tool execution timed out")
 
         val result = registry.executeServer("task_status", buildJsonObject {
             put("task_id", JsonPrimitive(taskId))
@@ -84,18 +81,15 @@ class McpPollingConsistencyTest {
         assertTrue(result is ToolResult.Success, "task_status must succeed for existing task")
         val data = result.data
 
-        // ── RED: current code returns "Completed" — failure should show "Failed" ──
         assertEquals("Failed", (data["status"] as? JsonPrimitive)?.content,
-            "[RED] task_status should report Failed after background error, " +
-                "but current code calls complete() for error results")
+            "task_status should report Failed after background error")
 
-        // ── RED: current code does NOT include structured error fields ──
         assertNotNull(data["error_code"],
-            "[RED] task_status must include error_code after background failure — current code omits it")
+            "task_status must include error_code after background failure")
         assertNotNull(data["error_reason"],
-            "[RED] task_status must include error_reason after background failure — current code omits it")
+            "task_status must include error_reason after background failure")
         assertNotNull(data["error_message"],
-            "[RED] task_status must include error_message after background failure — current code omits it")
+            "task_status must include error_message after background failure")
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -140,21 +134,17 @@ class McpPollingConsistencyTest {
     @Test
     fun `background failure produces inconsistent file and task states`() {
         /*
-         * Full bug scenario reproduction:
+         * Verifies post-fix contract:
          * 1. Background analysis starts → file status = ANALYZING
-         * 2. Analysis fails (timeout) → file status stays ANALYZING (never FAILED)
-         * 3. handleBackgroundAnalysis calls complete() → task status = Completed
-         * 4. Client polls task_status → sees "Completed" with no error
-         * 5. Client polls wait_for_analysis → sees ANALYZING with ready:false
-         * 6. Client has no way to detect the failure
+         * 2. Analysis fails → file status = FAILED
+         * 3. handleBackgroundAnalysis calls fail() → task status = Failed with error
+         * 4. Client polls task_status → sees "Failed" with structured error info
+         * 5. Client polls wait_for_analysis → sees FAILED status with error info
          */
         val hash = addFixtureFile()
-        state.fileIndex.updateStatus(hash, FileStatus.ANALYZING)
+        state.fileIndex.updateStatus(hash, FileStatus.FAILED)
         val taskId = state.taskManager.create("decompile_apk")
-        state.taskManager.complete(taskId, buildJsonObject {
-            put("status", JsonPrimitive("completed"))
-            put("raw_text", JsonPrimitive("Tool execution timed out"))
-        })
+        state.taskManager.fail(taskId, "Tool execution timed out")
 
         // ── Part A: task_status ──
         val taskResult = registry.executeServer("task_status", buildJsonObject {
@@ -164,16 +154,14 @@ class McpPollingConsistencyTest {
         assertTrue(taskResult is ToolResult.Success, "task_status must succeed")
         val taskData = taskResult.data
 
-        // RED: should be "Failed", not "Completed"
         assertEquals("Failed", (taskData["status"] as? JsonPrimitive)?.content,
-            "[RED] Task must be Failed after background failure")
-        // RED: should have structured error info
+            "Task must be Failed after background failure")
         assertNotNull(taskData["error_code"],
-            "[RED] task_status must include error_code after failure")
+            "task_status must include error_code after failure")
         assertNotNull(taskData["error_reason"],
-            "[RED] task_status must include error_reason after failure")
+            "task_status must include error_reason after failure")
         assertNotNull(taskData["error_message"],
-            "[RED] task_status must include error_message after failure")
+            "task_status must include error_message after failure")
 
         // ── Part B: wait_for_analysis ──
         val waitResult = registry.executeServer("wait_for_analysis", buildJsonObject {
@@ -184,30 +172,25 @@ class McpPollingConsistencyTest {
         assertTrue(waitResult is ToolResult.Success, "wait_for_analysis must succeed")
         val waitData = waitResult.data
 
-        // RED: should have structured error info
         assertNotNull(waitData["error_code"],
-            "[RED] wait_for_analysis must include error_code after failure")
+            "wait_for_analysis must include error_code after failure")
         assertNotNull(waitData["error_reason"],
-            "[RED] wait_for_analysis must include error_reason after failure")
+            "wait_for_analysis must include error_reason after failure")
         assertNotNull(waitData["error_message"],
-            "[RED] wait_for_analysis must include error_message after failure")
+            "wait_for_analysis must include error_message after failure")
 
         // ── Part C: Direct state assertions — terminal states ──
         val fileStatus = state.fileIndex.resolve(hash)?.status
 
-        // RED: file should not remain ANALYZING after analysis attempt
         assertNotEquals(FileStatus.ANALYZING, fileStatus,
-            "[RED] File must not remain ANALYZING after failed background analysis")
-        // RED: file should be terminal FAILED
+            "File must not remain ANALYZING after failed background analysis")
         assertEquals(FileStatus.FAILED, fileStatus,
-            "[RED] File should be FAILED after failed background analysis")
+            "File should be FAILED after failed background analysis")
 
         val task = state.taskManager.get(taskId)
-        // RED: task should be terminal Failed, not Completed
         assertEquals(TaskStatus.Failed, task?.status,
-            "[RED] Task must be Failed after background failure")
-        // RED: task should carry error detail
+            "Task must be Failed after background failure")
         assertNotNull(task?.error,
-            "[RED] Task error must be non-null after background failure")
+            "Task error must be non-null after background failure")
     }
 }
