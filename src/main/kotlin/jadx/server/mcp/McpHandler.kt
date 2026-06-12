@@ -372,10 +372,16 @@ class McpHandler(private val state: ServerState) {
         Thread.ofVirtual().name("task-$taskId").start {
             try {
                 val result = handleSyncAnalysis(toolName, fileHash, args, sessionId)
-                if (result.isError == true) {
-                    val errorText = (result.content.firstOrNull() as? TextContent)?.text
-                        ?: "Unknown error"
-                    state.taskManager.fail(taskId, errorText)
+                val contentText = (result.content.firstOrNull() as? TextContent)?.text
+                val isError = result.isError == true || contentText?.let {
+                    try {
+                        Json.parseToJsonElement(it).jsonObject["error_code"] != null
+                    } catch (_: Exception) {
+                        false
+                    }
+                } ?: false
+                if (isError) {
+                    state.taskManager.fail(taskId, contentText ?: "Unknown error")
                 } else {
                     val actualResult = extractTaskResult(result)
                     state.taskManager.complete(taskId, actualResult)
