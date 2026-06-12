@@ -1,18 +1,17 @@
 package jadx.server
 
-import jadx.server.config.ServerConfig
-import jadx.server.config.TransportMode
+import jadx.server.fixture.ServerStateTestBase
 import jadx.server.mcp.ToolResult
 import jadx.server.server.FileStatus
-import jadx.server.server.ServerState
 import jadx.server.server.TaskStatus
-import jadx.server.tools.ToolRegistry
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.nio.file.Files
-import java.nio.file.Path
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * TDD regression tests that PROVE `task_status`, `wait_for_analysis`,
@@ -32,30 +31,7 @@ import kotlin.test.*
  *   leaving the file stuck at ANALYZING forever.
  * - extractTaskResult() produces a JSON result without error fields.
  */
-class McpPollingConsistencyTest {
-    private lateinit var tempDir: Path
-    private lateinit var state: ServerState
-    private lateinit var registry: ToolRegistry
-
-    @BeforeTest
-    fun setUp() {
-        tempDir = Files.createTempDirectory("jadx-test-polling")
-        val config = ServerConfig(uploadDir = tempDir)
-        state = ServerState(config)
-        registry = ToolRegistry.build(state, TransportMode.STDIO)
-    }
-
-    @AfterTest
-    fun tearDown() {
-        state.shutdown()
-        tempDir.toFile().deleteRecursively()
-    }
-
-    private fun addFixtureFile(name: String = "test.apk", content: ByteArray = byteArrayOf(1, 2, 3, 4, 5)): String {
-        val filePath = tempDir.resolve(name)
-        Files.write(filePath, content)
-        return state.fileIndex.add(filePath, tempDir).hash
-    }
+class McpPollingConsistencyTest : ServerStateTestBase() {
 
     // ════════════════════════════════════════════════════════════════════
     // Test 1: task_status lacks structured error info after background error

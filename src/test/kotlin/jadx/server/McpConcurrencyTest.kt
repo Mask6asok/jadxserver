@@ -1,26 +1,19 @@
 package jadx.server
 
-import jadx.server.config.ServerConfig
-import jadx.server.config.TransportMode
+import jadx.server.fixture.ServerStateTestBase
 import jadx.server.mcp.ToolResult
 import jadx.server.server.FileStatus
-import jadx.server.server.ServerState
 import jadx.server.server.TaskStatus
 import jadx.server.tools.CoreTools
-import jadx.server.tools.ToolRegistry
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import java.nio.file.Files
-import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.test.AfterTest
-import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -29,23 +22,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-class McpConcurrencyTest {
-    private lateinit var tempDir: Path
-    private lateinit var state: ServerState
-    private lateinit var registry: ToolRegistry
-
-    @BeforeTest
-    fun setUp() {
-        tempDir = Files.createTempDirectory("jadx-test-concurrency")
-        state = ServerState(ServerConfig(uploadDir = tempDir))
-        registry = ToolRegistry.build(state, TransportMode.STDIO)
-    }
-
-    @AfterTest
-    fun tearDown() {
-        state.shutdown()
-        tempDir.toFile().deleteRecursively()
-    }
+class McpConcurrencyTest : ServerStateTestBase() {
 
     @Test
     fun `background completion and simultaneous polling keep task and file terminal states consistent`() {
@@ -158,12 +135,6 @@ class McpConcurrencyTest {
         if (backgroundThread.isAlive || pollingThread.isAlive) {
             fail("concurrency test threads did not finish")
         }
-    }
-
-    private fun addFixtureFile(name: String = "test.apk", content: ByteArray = byteArrayOf(1, 2, 3, 4, 5)): String {
-        val filePath = tempDir.resolve(name)
-        Files.write(filePath, content)
-        return state.fileIndex.add(filePath, tempDir).hash
     }
 
     private fun successData(result: ToolResult): JsonObject {

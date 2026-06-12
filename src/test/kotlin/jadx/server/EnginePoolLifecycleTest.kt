@@ -2,64 +2,20 @@ package jadx.server
 
 import jadx.server.engine.EngineInstance
 import jadx.server.engine.EngineOptions
-import jadx.server.fixture.LifecycleMockEngine
+import jadx.server.fixture.LifecyclePoolTestBase
 import jadx.server.server.AcquireResult
 import jadx.server.server.EnginePool
-import jadx.server.server.FileIndex
 import jadx.server.server.FileStatus
-import jadx.server.server.PoolConfig
 import jadx.server.server.PoolState
-import java.nio.file.Files
-import java.nio.file.Path
 import java.time.Duration
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
-class EnginePoolLifecycleTest {
-    private lateinit var tempDir: Path
-    private lateinit var fileIndex: FileIndex
-    private val mockEngine = LifecycleMockEngine()
-
-    @BeforeTest
-    fun setUp() {
-        tempDir = Files.createTempDirectory("jadx-lifecycle-test")
-        Files.createDirectories(tempDir.resolve("binary"))
-        fileIndex = FileIndex(tempDir)
-        mockEngine.resetCounters()
-        mockEngine.openDelayMs = 0
-        mockEngine.openShouldThrow = null
-    }
-
-    @AfterTest
-    fun tearDown() {
-        tempDir.toFile().deleteRecursively()
-    }
-
-    private fun makePool(
-        maxTotal: Int = 2,
-        maxPerFile: Int = 1,
-        idleTimeout: Duration = Duration.ofMinutes(5)
-    ): EnginePool {
-        return EnginePool(PoolConfig(maxTotal, maxPerFile, idleTimeout), mockEngine, fileIndex)
-    }
-
-    private fun addFixtureFile(name: String, content: String? = null): String {
-        val f = tempDir.resolve(name)
-        Files.writeString(f, content ?: "unique content for $name")
-        return fileIndex.add(f).hash
-    }
-
-    private fun spawnAndInsert(
-        pool: EnginePool,
-        sessionId: String,
-        hash: String,
-        options: EngineOptions = EngineOptions()
-    ): EngineInstance {
-        val r = pool.acquire(sessionId, hash, options)
-        assertTrue(r is AcquireResult.NeedSpawn, "Expected NeedSpawn but got $r")
-        val inst = mockEngine.open(r.file, r.options)
-        pool.insert(sessionId, hash, inst)
-        return inst
-    }
+class EnginePoolLifecycleTest : LifecyclePoolTestBase() {
 
     // Busy / Full
 

@@ -1,21 +1,20 @@
 package jadx.server
 
 import jadx.server.engine.EngineOptions
-import jadx.server.fixture.LifecycleMockEngine
+import jadx.server.fixture.LifecyclePoolTestBase
 import jadx.server.mcp.ToolResult
 import jadx.server.server.AcquireResult
-import jadx.server.server.EnginePool
-import jadx.server.server.FileIndex
 import jadx.server.server.FileStatus
-import jadx.server.server.PoolConfig
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.nio.file.Files
-import java.nio.file.Path
-import java.time.Duration
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * TDD regression tests proving [jadx.server.mcp.McpHandler.handleSyncAnalysis]
@@ -35,40 +34,7 @@ import kotlin.test.*
  * hard-codes [jadx.server.engine.JadxEngine] and is not mockable for unit tests.
  * The test simulates the exact code paths that [handleSyncAnalysis] executes.
  */
-class McpTimeoutRegressionTest {
-
-    private lateinit var tempDir: Path
-    private lateinit var fileIndex: FileIndex
-    private val mockEngine = LifecycleMockEngine()
-
-    @BeforeTest
-    fun setUp() {
-        tempDir = Files.createTempDirectory("jadx-mcp-timeout-regression")
-        Files.createDirectories(tempDir.resolve("binary"))
-        fileIndex = FileIndex(tempDir)
-        mockEngine.resetCounters()
-        mockEngine.openDelayMs = 0
-        mockEngine.openShouldThrow = null
-    }
-
-    @AfterTest
-    fun tearDown() {
-        tempDir.toFile().deleteRecursively()
-    }
-
-    private fun makePool(
-        maxTotal: Int = 2,
-        maxPerFile: Int = 1,
-        idleTimeout: Duration = Duration.ofMinutes(5)
-    ): EnginePool {
-        return EnginePool(PoolConfig(maxTotal, maxPerFile, idleTimeout), mockEngine, fileIndex)
-    }
-
-    private fun addFixtureFile(name: String, content: String? = null): String {
-        val f = tempDir.resolve(name)
-        Files.writeString(f, content ?: "fixture content for $name")
-        return fileIndex.add(f).hash
-    }
+class McpTimeoutRegressionTest : LifecyclePoolTestBase() {
 
     // ──────────────────────────────────────────────────────────────────────
     //  Test 1: TimeoutCancellationException leaves FileStatus.ANALYZING
@@ -275,7 +241,7 @@ class McpTimeoutRegressionTest {
      * matching the production code's [AcquireRetryResult] contract.
      */
     private fun simulateAcquireRetry(
-        pool: EnginePool,
+        pool: jadx.server.server.EnginePool,
         sessionId: String,
         fileHash: String,
         maxRetries: Int = 5,
