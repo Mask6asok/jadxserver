@@ -105,7 +105,12 @@ class McpHandler(private val state: ServerState) {
             try {
                 projectService.load(projectFile)
             } catch (e: Exception) {
-                return toCallToolResult(ToolResult.internal("Failed to load project file: ${e.message}"))
+                state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                return buildFailureResult(
+                    code = "INTERNAL",
+                    reason = "project_load_failed",
+                    message = "Failed to load project file: ${e.message}"
+                )
             }
         } else {
             null
@@ -133,7 +138,15 @@ class McpHandler(private val state: ServerState) {
         )
 
         val acquireResult = acquireWithRetry(sessionId, fileHash, engineOptions)
-            ?: return toCallToolResult(ToolResult.error(-32002, "All workers busy after retrying, try again later"))
+            ?: run {
+                state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                return buildFailureResult(
+                    code = "WORKER_EXHAUSTED",
+                    reason = "worker_exhausted",
+                    message = "All workers busy after retrying, try again later",
+                    legacyCode = -32002
+                )
+            }
 
         return when (acquireResult) {
             is AcquireResult.Found -> {
@@ -147,7 +160,12 @@ class McpHandler(private val state: ServerState) {
                     state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                     result
                 } catch (e: TimeoutCancellationException) {
-                    toCallToolResult(ToolResult.internal("Tool execution timed out"))
+                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                    buildFailureResult(
+                        code = "TIMEOUT",
+                        reason = "analysis_timeout",
+                        message = "Tool execution timed out"
+                    )
                 } catch (e: Exception) {
                     state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                     throw e
@@ -160,7 +178,11 @@ class McpHandler(private val state: ServerState) {
                     state.engine.open(acquireResult.file, acquireResult.options)
                 } catch (e: Exception) {
                     state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                    return toCallToolResult(ToolResult.internal("Failed to open decompiler: ${e.message}"))
+                    return buildFailureResult(
+                        code = "INTERNAL",
+                        reason = "engine_open_failed",
+                        message = "Failed to open decompiler: ${e.message}"
+                    )
                 }
                 if (projectFile == null && sourceDir != null) {
                     val binaryDir = Path.of(entry.path).parent
@@ -185,7 +207,12 @@ class McpHandler(private val state: ServerState) {
                     state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                     result
                 } catch (e: TimeoutCancellationException) {
-                    toCallToolResult(ToolResult.internal("Tool execution timed out"))
+                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                    buildFailureResult(
+                        code = "TIMEOUT",
+                        reason = "analysis_timeout",
+                        message = "Tool execution timed out"
+                    )
                 } catch (e: Exception) {
                     state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                     throw e
@@ -193,12 +220,33 @@ class McpHandler(private val state: ServerState) {
                     state.enginePool.release(instance)
                 }
             }
-            AcquireResult.Busy -> toCallToolResult(ToolResult.error(-32002, "All workers busy, retry later"))
+            AcquireResult.Busy -> {
+                state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                buildFailureResult(
+                    code = "WORKER_EXHAUSTED",
+                    reason = "worker_exhausted",
+                    message = "All workers busy, retry later",
+                    legacyCode = -32002
+                )
+            }
             AcquireResult.Full -> {
                 state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                 toCallToolResult(ToolResult.poolFull(state.config.maxInstances))
             }
         }
+    }
+
+    private fun buildFailureResult(
+        code: String,
+        reason: String,
+        message: String,
+        legacyCode: Int = -32603
+    ): CallToolResult {
+        return toCallToolResult(ToolResult.error(legacyCode, buildJsonObject {
+            put("error_code", JsonPrimitive(code))
+            put("error_reason", JsonPrimitive(reason))
+            put("error_message", JsonPrimitive(message))
+        }.toString()))
     }
 
     private fun acquireWithRetry(
