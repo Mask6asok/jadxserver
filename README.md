@@ -120,7 +120,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 所有 CLI 选项通过 `--args` 传递：
 
 ```bash
-./gradlew run --args="--listen 0.0.0.0:9090 --max-instances 4"
+./gradlew run --args="--listen 0.0.0.0:9090 --public-base-url https://jadx.example.com --max-instances 4"
 ```
 
 ### 构建
@@ -179,6 +179,8 @@ jadx-server --stdio
 #### Claude Code（HTTP）
 
 先在终端启动 jadx-server，再添加到配置：
+
+如果服务监听在 `0.0.0.0` 或经由反向代理暴露，建议同时设置 `--public-base-url`，这样 `upload_file` 返回的上传地址会是客户端可访问的真实地址，而不是 `0.0.0.0`。
 
 ```bash
 java -jar jadx-server-0.1.3-all.jar --listen 127.0.0.1:8080
@@ -239,6 +241,22 @@ curl -X POST http://127.0.0.1:8080/upload \
 ```
 
 或者直接用 MCP 客户端调用 `upload_file`，服务端会返回完整的上传 URL，用返回的 `file_hash` 调用分析工具。
+
+如果服务端使用 `--listen 0.0.0.0:<port>` 部署到远程主机或反向代理后面，请务必额外配置：
+
+```bash
+java -jar jadx-server-0.1.3-all.jar \
+  --listen 0.0.0.0:19090 \
+  --public-base-url https://jadx.example.com
+```
+
+此时 `upload_file` 返回的 `upload_url` 将是：
+
+```text
+https://jadx.example.com/upload
+```
+
+而不是对客户端无意义的 `http://0.0.0.0:19090/upload`。
 
 如需持久化为 upstream 风格项目，可额外调用 `save_project(file_hash=...)`，服务端会在 `uploads/binary/<md5>/project.jadx` 生成项目文件，并将缓存目录固定为同目录下的 `project.cache/`。
 

@@ -53,7 +53,7 @@ object ServerTools {
     fun uploadFile(args: JsonObject, sessionId: String, state: ServerState): ToolResult {
         return when (state.config.transport) {
             TransportMode.HTTP -> {
-                val baseUrl = "http://${state.config.listen}"
+                val baseUrl = state.config.publicBaseUrl?.trimEnd('/') ?: "http://${state.config.listen}"
                 ToolResult.success {
                     put("upload_url", JsonPrimitive("$baseUrl/upload"))
                     put("upload_method", JsonPrimitive("POST"))

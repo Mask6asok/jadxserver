@@ -38,6 +38,7 @@ import java.time.Duration
 fun main(args: Array<String>) {
     var transportMode = TransportMode.HTTP
     var listenAddr = "127.0.0.1:8080"
+    var publicBaseUrl: String? = null
     var maxInst = 0
     var upload = "./uploads"
     var xrefMode = XrefMode.JADX
@@ -54,6 +55,7 @@ fun main(args: Array<String>) {
             "--stdio" -> transportMode = TransportMode.STDIO
             "--transport" -> { if (i+1 < args.size && args[i+1] == "stdio") transportMode = TransportMode.STDIO; i++ }
             "--listen" -> { if (i+1 < args.size) listenAddr = args[i+1]; i++ }
+            "--public-base-url" -> { if (i+1 < args.size) publicBaseUrl = args[i+1]; i++ }
             "--max-instances", "-m" -> { if (i+1 < args.size) maxInst = args[i+1].toIntOrNull() ?: 0; i++ }
             "--upload-dir" -> { if (i+1 < args.size) upload = args[i+1]; i++ }
             "--xref-mode" -> { if (i+1 < args.size) xrefMode = XrefMode.valueOf(args[i+1].uppercase()); i++ }
@@ -77,6 +79,7 @@ fun main(args: Array<String>) {
     val config = ServerConfig(
         transport = transportMode,
         listen = listenAddr,
+        publicBaseUrl = publicBaseUrl,
         maxInstances = maxInst,
         maxPerFile = maxPerFile,
         idleTimeout = idleTimeout,
@@ -178,7 +181,8 @@ fun printHelp() {
           --stdio                    Use stdio transport (default: HTTP)
           --transport <mode>         Transport mode: http, stdio (default: http)
           --listen <host:port>       HTTP listen address (default: 127.0.0.1:8080)
-          --max-instances, -m <n>    Max engine instances, 0=auto (default: 0)
+          --public-base-url <url>    Public base URL used in upload_file responses
+          --max-instances, -m <n>    Max engine instances, 0=auto(min CPU/4, lower-bounded to 1, upper-bounded to 2)
           --max-per-file <n>         Max concurrent instances per file (default: 4)
           --idle-timeout <s>         Idle engine eviction timeout in seconds (default: 300)
           --cleanup-interval <s>     Eviction check interval in seconds (default: 10)

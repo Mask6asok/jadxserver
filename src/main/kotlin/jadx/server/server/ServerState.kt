@@ -21,7 +21,7 @@ class ServerState(val config: ServerConfig) {
         fileIndex = FileIndex.loadFromUploadDir(config.uploadDir)
         val poolConfig = PoolConfig(
             maxTotal = if (config.maxInstances > 0) config.maxInstances
-            else minOf(Runtime.getRuntime().availableProcessors() / 4, 2),
+            else maxOf(1, minOf(Runtime.getRuntime().availableProcessors() / 4, 2)),
             maxPerFile = config.maxPerFile,
             idleTimeout = config.idleTimeout
         )
