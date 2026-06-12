@@ -236,6 +236,16 @@ object ServerTools {
             task.completedAt?.let { put("completed_at", JsonPrimitive(it.toString())) }
             task.result?.let { put("result", it) }
             task.error?.let { put("error", JsonPrimitive(it)) }
+            task.result?.let { result ->
+                result["error_code"]?.let { put("error_code", it) }
+                result["error_reason"]?.let { put("error_reason", it) }
+                result["error_message"]?.let { put("error_message", it) }
+            }
+            task.error?.let { err ->
+                put("error_code", JsonPrimitive("FAILED"))
+                put("error_reason", JsonPrimitive("task_failed"))
+                put("error_message", JsonPrimitive(err))
+            }
         }
     }
 
@@ -247,23 +257,36 @@ object ServerTools {
         val entry = state.fileIndex.resolve(fileHash)
             ?: return ToolResult.notFound("File not found: $fileHash")
 
+        if (entry.status != FileStatus.UPLOADED && entry.status != FileStatus.ANALYZING) {
+            return ToolResult.success {
+                put("file_hash", JsonPrimitive(entry.hash))
+                put("status", JsonPrimitive(entry.status.name))
+                put("ready", JsonPrimitive(entry.status == FileStatus.ANALYZED))
+            }
+        }
+
         val deadline = System.currentTimeMillis() + (timeoutSecs * 1000L)
-        while (entry.status == FileStatus.UPLOADED || entry.status == FileStatus.ANALYZING) {
+        while (true) {
+            val currentEntry = state.fileIndex.resolve(fileHash)
+                ?: return ToolResult.notFound("File not found during analysis: $fileHash")
+            if (currentEntry.status != FileStatus.UPLOADED && currentEntry.status != FileStatus.ANALYZING) {
+                return ToolResult.success {
+                    put("file_hash", JsonPrimitive(currentEntry.hash))
+                    put("status", JsonPrimitive(currentEntry.status.name))
+                    put("ready", JsonPrimitive(currentEntry.status == FileStatus.ANALYZED))
+                }
+            }
             if (System.currentTimeMillis() > deadline) {
                 return ToolResult.success {
-                    put("file_hash", JsonPrimitive(entry.hash))
-                    put("status", JsonPrimitive(entry.status.name))
+                    put("file_hash", JsonPrimitive(currentEntry.hash))
+                    put("status", JsonPrimitive(currentEntry.status.name))
                     put("ready", JsonPrimitive(false))
-                    put("message", JsonPrimitive("Timeout waiting for analysis"))
+                    put("error_code", JsonPrimitive("TIMEOUT"))
+                    put("error_reason", JsonPrimitive("analysis_timeout"))
+                    put("error_message", JsonPrimitive("Timeout waiting for analysis after ${timeoutSecs}s — file still ${currentEntry.status.name}"))
                 }
             }
             Thread.sleep(500)
-        }
-
-        return ToolResult.success {
-            put("file_hash", JsonPrimitive(entry.hash))
-            put("status", JsonPrimitive(entry.status.name))
-            put("ready", JsonPrimitive(entry.status == FileStatus.ANALYZED))
         }
     }
 
