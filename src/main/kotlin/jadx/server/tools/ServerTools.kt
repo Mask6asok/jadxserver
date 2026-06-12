@@ -11,10 +11,13 @@ import jadx.server.server.TaskStatus
 import jadx.server.util.getBoolean
 import jadx.server.util.getInt
 import jadx.server.util.getString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -242,9 +245,22 @@ object ServerTools {
                 result["error_message"]?.let { put("error_message", it) }
             }
             task.error?.let { err ->
-                put("error_code", JsonPrimitive("FAILED"))
-                put("error_reason", JsonPrimitive("task_failed"))
-                put("error_message", JsonPrimitive(err))
+                // Try to parse as structured error JSON first (from buildFailureResult)
+                val parsed = try {
+                    Json.parseToJsonElement(err).jsonObject
+                } catch (ignored: Exception) { null }
+                if (parsed != null && parsed.containsKey("error_code")) {
+                    val errorCode = parsed["error_code"]
+                    if (errorCode != null) put("error_code", errorCode)
+                    val errorReason = parsed["error_reason"]
+                    if (errorReason != null) put("error_reason", errorReason)
+                    val errorMessage = parsed["error_message"]
+                    if (errorMessage != null) put("error_message", errorMessage)
+                } else {
+                    put("error_code", JsonPrimitive("FAILED"))
+                    put("error_reason", JsonPrimitive("task_failed"))
+                    put("error_message", JsonPrimitive(err))
+                }
             }
         }
     }
