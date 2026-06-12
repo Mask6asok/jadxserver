@@ -179,7 +179,12 @@ class McpHandler(private val state: ServerState) {
                         } catch (e: Exception) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                             cleanupFailedRunArtifacts(cleanupContext)
-                            throw e
+                            buildFailureResult(
+                                code = "INTERNAL",
+                                reason = "analysis_failed",
+                                message = "Tool execution failed: ${e.message}",
+                                legacyCode = -32603
+                            )
                         } finally {
                             state.enginePool.release(acquireResult.instance)
                         }
@@ -228,7 +233,12 @@ class McpHandler(private val state: ServerState) {
                         } catch (e: Exception) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                             cleanupFailedRunArtifacts(cleanupContext)
-                            throw e
+                            buildFailureResult(
+                                code = "INTERNAL",
+                                reason = "analysis_failed",
+                                message = "Tool execution failed: ${e.message}",
+                                legacyCode = -32603
+                            )
                         } finally {
                             state.enginePool.release(instance)
                         }
@@ -246,7 +256,7 @@ class McpHandler(private val state: ServerState) {
                     AcquireResult.Full -> {
                         state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                         cleanupFailedRunArtifacts(cleanupContext)
-                        toCallToolResult(ToolResult.poolFull(state.config.maxInstances))
+                        buildFailureResult(code = "POOL_FULL", reason = "pool_full", message = "Worker pool at capacity (${state.config.maxInstances} instances)", legacyCode = -32003)
                     }
                 }
             }
