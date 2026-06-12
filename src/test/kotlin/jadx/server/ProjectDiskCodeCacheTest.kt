@@ -1,7 +1,13 @@
 package jadx.server
 
 import jadx.api.impl.SimpleCodeInfo
+import jadx.server.config.ServerConfig
 import jadx.server.engine.ProjectDiskCodeCache
+import jadx.server.mcp.FailedRunCleanupContext
+import jadx.server.fixture.LifecycleMockEngine
+import jadx.server.mcp.McpHandler
+import jadx.server.server.FileStatus
+import jadx.server.server.ServerState
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -92,6 +98,54 @@ class ProjectDiskCodeCacheTest {
         assertTrue(Files.exists(validFile), "malicious remove must not affect valid cache file")
         assertTrue(Files.exists(outsideFile), "malicious remove must not delete outside cache root")
         assertEquals("keep me", Files.readString(outsideFile))
+    }
+
+    @Test
+    fun testFailedAnalysisCleansGeneratedArtifactsButPreservesUploadedBinary() {
+        val uploadDir = Files.createTempDirectory(tempDir, "uploads")
+        val mockEngine = LifecycleMockEngine(openShouldThrow = "simulated open failure")
+        val state = ServerState(ServerConfig(uploadDir = uploadDir), mockEngine)
+        try {
+            val apkFile = tempDir.resolve("fixture.apk")
+            Files.writeString(apkFile, "apk bytes")
+            val entry = state.fileIndex.add(apkFile, uploadDir)
+            val binaryPath = Path.of(entry.path)
+            val binaryDir = binaryPath.parent
+            val projectFile = binaryDir.resolve("project.jadx")
+            val codeDir = binaryDir.resolve("project.cache").resolve("code")
+            val cacheDir = codeDir.parent
+            val sourceFile = codeDir.resolve("sources/com/example/Foo.java")
+
+            Files.createDirectories(sourceFile.parent)
+            Files.writeString(projectFile, "generated project")
+            Files.writeString(sourceFile, "class Foo {}")
+            val handler = McpHandler(state)
+
+            state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+            state.fileIndex.updateProjectPaths(entry.hash, projectFile, cacheDir)
+            handler.cleanupFailedRunArtifacts(
+                FailedRunCleanupContext(
+                    hash = entry.hash,
+                    originalProjectFilePath = projectFile.toString(),
+                    originalCacheDirPath = cacheDir.toString(),
+                    projectFilePath = projectFile,
+                    cacheDirPath = cacheDir,
+                    generatedCodeCacheDirPath = codeDir,
+                    projectFileExistedAtStart = false,
+                    cacheDirExistedAtStart = false,
+                    generatedCodeCacheDirExistedAtStart = false
+                )
+            )
+
+            assertTrue(Files.exists(binaryPath), "uploaded APK must be preserved")
+            assertFalse(Files.exists(projectFile), "generated project file must be removed after failed run")
+            assertFalse(Files.exists(codeDir), "generated source cache must be removed after failed run")
+            assertEquals(null, state.fileIndex.resolve(entry.hash)?.projectFilePath)
+            assertEquals(null, state.fileIndex.resolve(entry.hash)?.cacheDirPath)
+        } finally {
+            state.shutdown()
+            uploadDir.toFile().deleteRecursively()
+        }
     }
 
     private fun expectIllegalArgument(className: String, action: () -> Unit) {

@@ -44,7 +44,7 @@ class ToolRegistry private constructor(
             logger.warn("[ANALYSIS] {} {}ms args={} -> ERROR: {}", name, System.currentTimeMillis() - start, compactArgs(args), e.message)
             ToolResult.internal("Tool execution error in $name: ${e.message}")
         }
-        logger.info("[ANALYSIS] {} {}ms args={} -> {}", name, System.currentTimeMillis() - start, compactArgs(args), compactResult(result))
+        logger.info("[ANALYSIS] {} {}ms args={} -> {}", name, System.currentTimeMillis() - start, compactArgs(args), compactResult(result, args))
         return result
     }
 
@@ -58,7 +58,7 @@ class ToolRegistry private constructor(
             logger.warn("[SERVER] {} {}ms session={} args={} -> ERROR: {}", name, System.currentTimeMillis() - start, sessionId.take(12), compactArgs(args), e.message)
             ToolResult.internal("Tool execution error in $name: ${e.message}")
         }
-        logger.info("[SERVER] {} {}ms session={} args={} -> {}", name, System.currentTimeMillis() - start, sessionId.take(12), compactArgs(args), compactResult(result))
+        logger.info("[SERVER] {} {}ms session={} args={} -> {}", name, System.currentTimeMillis() - start, sessionId.take(12), compactArgs(args), compactResult(result, args))
         return result
     }
 
@@ -74,10 +74,12 @@ class ToolRegistry private constructor(
         "class_name", "method_name", "name", "tool"
     )
 
-    private fun compactResult(result: ToolResult): String = when (result) {
+    private fun compactResult(result: ToolResult, args: JsonObject = JsonObject(emptyMap())): String = when (result) {
         is ToolResult.Success -> {
+            val argsKeys = args.keys
             val parts = mutableListOf<String>()
             for (key in meaningfulKeys) {
+                if (key in argsKeys) continue
                 val v = result.data[key] ?: continue
                 val s = when (v) {
                     is JsonPrimitive -> v.content
@@ -87,7 +89,7 @@ class ToolRegistry private constructor(
                 parts += "$key=$s"
                 if (parts.size >= 4) break
             }
-            "OK(${parts.joinToString(" ")})"
+            if (parts.isEmpty()) "OK" else "OK(${parts.joinToString(" ")})"
         }
         is ToolResult.Error -> {
             val msg = result.message.take(60)

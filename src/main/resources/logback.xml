@@ -9,6 +9,7 @@
     <logger name="io.modelcontextprotocol" level="INFO"/>
     <logger name="io.ktor" level="INFO"/>
     <logger name="jadx" level="OFF"/>
+    <logger name="FeatureRegistry[Tool]" level="WARN"/>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>

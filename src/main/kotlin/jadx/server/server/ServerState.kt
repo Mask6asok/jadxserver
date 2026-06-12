@@ -7,8 +7,10 @@ import java.nio.file.Files
 import java.time.Duration
 import java.time.Instant
 
-class ServerState(val config: ServerConfig) {
+class ServerState(
+    val config: ServerConfig,
     val engine: DecompilerEngine = JadxEngine()
+) {
     val fileIndex: FileIndex
     val enginePool: EnginePool
     val sessionManager = SessionManager()

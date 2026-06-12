@@ -28,6 +28,7 @@ import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Comparator
 
 class McpHandler(private val state: ServerState) {
     private val logger = LoggerFactory.getLogger(McpHandler::class.java)
@@ -98,14 +99,31 @@ class McpHandler(private val state: ServerState) {
         val entry = state.fileIndex.resolve(fileHash)
             ?: return toCallToolResult(ToolResult.notFound("File not found: $fileHash"))
 
+        val projectFile = entry.projectFilePath?.let { Path.of(it) }
+        val binaryDir = Path.of(entry.path).parent
+        val defaultProjectFile = binaryDir.resolve("project.jadx")
+        val defaultCacheDir = binaryDir.resolve("project.cache")
+        val defaultCodeCacheDir = defaultCacheDir.resolve("code")
+        val cleanupContext = FailedRunCleanupContext(
+            hash = entry.hash,
+            originalProjectFilePath = entry.projectFilePath,
+            originalCacheDirPath = entry.cacheDirPath,
+            projectFilePath = projectFile ?: defaultProjectFile,
+            cacheDirPath = entry.cacheDirPath?.let { Path.of(it) } ?: defaultCacheDir,
+            generatedCodeCacheDirPath = defaultCodeCacheDir,
+            projectFileExistedAtStart = projectFile?.let { Files.exists(it) } ?: Files.exists(defaultProjectFile),
+            cacheDirExistedAtStart = entry.cacheDirPath?.let { Files.exists(Path.of(it)) } ?: Files.exists(defaultCacheDir),
+            generatedCodeCacheDirExistedAtStart = Files.exists(defaultCodeCacheDir)
+        )
+
         state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZING)
 
-        val projectFile = entry.projectFilePath?.let { Path.of(it) }
         val resolvedProject = if (projectFile != null && Files.exists(projectFile)) {
             try {
                 projectService.load(projectFile)
             } catch (e: Exception) {
                 state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                cleanupFailedRunArtifacts(cleanupContext)
                 return buildFailureResult(
                     code = "INTERNAL",
                     reason = "project_load_failed",
@@ -137,102 +155,160 @@ class McpHandler(private val state: ServerState) {
             xrefMode = state.config.xrefMode
         )
 
-        val acquireResult = acquireWithRetry(sessionId, fileHash, engineOptions)
-            ?: run {
+        return when (val retryOutcome = acquireWithRetry(sessionId, fileHash, engineOptions)) {
+            is AcquireRetryResult.Success -> {
+                when (val acquireResult = retryOutcome.result) {
+                    is AcquireResult.Found -> {
+                        try {
+                            val apk = acquireResult.instance.state as DecompiledApk
+                            val result = runBlocking {
+                                withTimeout(state.config.toolTimeout.toMillis()) {
+                                    toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                                }
+                            }
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
+                            result
+                        } catch (e: TimeoutCancellationException) {
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                            cleanupFailedRunArtifacts(cleanupContext)
+                            buildFailureResult(
+                                code = "TIMEOUT",
+                                reason = "analysis_timeout",
+                                message = "Tool execution timed out"
+                            )
+                        } catch (e: Exception) {
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                            cleanupFailedRunArtifacts(cleanupContext)
+                            throw e
+                        } finally {
+                            state.enginePool.release(acquireResult.instance)
+                        }
+                    }
+                    is AcquireResult.NeedSpawn -> {
+                        val instance = try {
+                            state.engine.open(acquireResult.file, acquireResult.options)
+                        } catch (e: Exception) {
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                            cleanupFailedRunArtifacts(cleanupContext)
+                            return buildFailureResult(
+                                code = "INTERNAL",
+                                reason = "engine_open_failed",
+                                message = "Failed to open decompiler: ${e.message}"
+                            )
+                        }
+                        if (projectFile == null && sourceDir != null) {
+                            val generatedProjectFile = binaryDir.resolve("project.jadx")
+                            val generatedCacheDir = binaryDir.resolve("project.cache")
+                            try {
+                                val project = projectService.createDefault(Path.of(entry.path), generatedCacheDir, generatedProjectFile)
+                                projectService.save(generatedProjectFile, project)
+                                state.fileIndex.updateProjectPaths(entry.hash, generatedProjectFile, generatedCacheDir)
+                            } catch (e: Exception) {
+                                logger.warn("Failed to save project file for {}: {}", entry.hash, e.message)
+                            }
+                        }
+                        state.enginePool.insert(sessionId, fileHash, instance)
+                        try {
+                            val apk = instance.state as DecompiledApk
+                            val result = runBlocking {
+                                withTimeout(state.config.toolTimeout.toMillis()) {
+                                    toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
+                                }
+                            }
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
+                            result
+                        } catch (e: TimeoutCancellationException) {
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                            cleanupFailedRunArtifacts(cleanupContext)
+                            buildFailureResult(
+                                code = "TIMEOUT",
+                                reason = "analysis_timeout",
+                                message = "Tool execution timed out"
+                            )
+                        } catch (e: Exception) {
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                            cleanupFailedRunArtifacts(cleanupContext)
+                            throw e
+                        } finally {
+                            state.enginePool.release(instance)
+                        }
+                    }
+                    AcquireResult.Busy -> {
+                        state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                        cleanupFailedRunArtifacts(cleanupContext)
+                        buildFailureResult(
+                            code = "WORKER_EXHAUSTED",
+                            reason = "worker_exhausted",
+                            message = "All workers busy, retry later",
+                            legacyCode = -32002
+                        )
+                    }
+                    AcquireResult.Full -> {
+                        state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                        cleanupFailedRunArtifacts(cleanupContext)
+                        toCallToolResult(ToolResult.poolFull(state.config.maxInstances))
+                    }
+                }
+            }
+            is AcquireRetryResult.Interrupted -> {
                 state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                return buildFailureResult(
+                cleanupFailedRunArtifacts(cleanupContext)
+                buildFailureResult(
+                    code = "WORKER_INTERRUPTED",
+                    reason = "worker_interrupted",
+                    message = "Acquire was interrupted"
+                )
+            }
+            AcquireRetryResult.Exhausted -> {
+                state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                cleanupFailedRunArtifacts(cleanupContext)
+                buildFailureResult(
                     code = "WORKER_EXHAUSTED",
                     reason = "worker_exhausted",
                     message = "All workers busy after retrying, try again later",
                     legacyCode = -32002
                 )
             }
+        }
+    }
 
-        return when (acquireResult) {
-            is AcquireResult.Found -> {
-                try {
-                    val apk = acquireResult.instance.state as DecompiledApk
-                    val result = runBlocking {
-                        withTimeout(state.config.toolTimeout.toMillis()) {
-                            toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
-                        }
-                    }
-                    state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
-                    result
-                } catch (e: TimeoutCancellationException) {
-                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                    buildFailureResult(
-                        code = "TIMEOUT",
-                        reason = "analysis_timeout",
-                        message = "Tool execution timed out"
-                    )
-                } catch (e: Exception) {
-                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                    throw e
-                } finally {
-                    state.enginePool.release(acquireResult.instance)
-                }
-            }
-            is AcquireResult.NeedSpawn -> {
-                val instance = try {
-                    state.engine.open(acquireResult.file, acquireResult.options)
-                } catch (e: Exception) {
-                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                    return buildFailureResult(
-                        code = "INTERNAL",
-                        reason = "engine_open_failed",
-                        message = "Failed to open decompiler: ${e.message}"
-                    )
-                }
-                if (projectFile == null && sourceDir != null) {
-                    val binaryDir = Path.of(entry.path).parent
-                    val generatedProjectFile = binaryDir.resolve("project.jadx")
-                    val generatedCacheDir = binaryDir.resolve("project.cache")
-                    try {
-                        val project = projectService.createDefault(Path.of(entry.path), generatedCacheDir, generatedProjectFile)
-                        projectService.save(generatedProjectFile, project)
-                        state.fileIndex.updateProjectPaths(entry.hash, generatedProjectFile, generatedCacheDir)
-                    } catch (e: Exception) {
-                        logger.warn("Failed to save project file for {}: {}", entry.hash, e.message)
-                    }
-                }
-                state.enginePool.insert(sessionId, fileHash, instance)
-                try {
-                    val apk = instance.state as DecompiledApk
-                    val result = runBlocking {
-                        withTimeout(state.config.toolTimeout.toMillis()) {
-                            toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
-                        }
-                    }
-                    state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
-                    result
-                } catch (e: TimeoutCancellationException) {
-                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                    buildFailureResult(
-                        code = "TIMEOUT",
-                        reason = "analysis_timeout",
-                        message = "Tool execution timed out"
-                    )
-                } catch (e: Exception) {
-                    state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                    throw e
-                } finally {
-                    state.enginePool.release(instance)
-                }
-            }
-            AcquireResult.Busy -> {
-                state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                buildFailureResult(
-                    code = "WORKER_EXHAUSTED",
-                    reason = "worker_exhausted",
-                    message = "All workers busy, retry later",
-                    legacyCode = -32002
-                )
-            }
-            AcquireResult.Full -> {
-                state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
-                toCallToolResult(ToolResult.poolFull(state.config.maxInstances))
-            }
+    internal fun cleanupFailedRunArtifacts(context: FailedRunCleanupContext) {
+        clearProjectPaths(context.hash)
+
+        if (!context.projectFileExistedAtStart) {
+            deletePathIfExists(context.projectFilePath)
+        }
+        if (!context.cacheDirExistedAtStart) {
+            deleteRecursivelyIfExists(context.cacheDirPath)
+        }
+        val codeDirCoveredByCacheDir = context.generatedCodeCacheDirPath.startsWith(context.cacheDirPath)
+        if (!context.generatedCodeCacheDirExistedAtStart && (!codeDirCoveredByCacheDir || context.cacheDirExistedAtStart)) {
+            deleteRecursivelyIfExists(context.generatedCodeCacheDirPath)
+        }
+    }
+
+    private fun clearProjectPaths(hash: String) {
+        state.fileIndex.updateProjectPaths(hash, null, null)
+    }
+
+    private fun deletePathIfExists(path: Path) {
+        try {
+            Files.deleteIfExists(path)
+        } catch (e: Exception) {
+            logger.warn("Failed to delete generated file {} after analysis failure: {}", path, e.message)
+        }
+    }
+
+    private fun deleteRecursivelyIfExists(path: Path) {
+        if (!Files.exists(path)) {
+            return
+        }
+        try {
+            Files.walk(path)
+                .sorted(Comparator.reverseOrder())
+                .forEach { current -> Files.deleteIfExists(current) }
+        } catch (e: Exception) {
+            logger.warn("Failed to delete generated directory {} after analysis failure: {}", path, e.message)
         }
     }
 
@@ -249,22 +325,31 @@ class McpHandler(private val state: ServerState) {
         }.toString()))
     }
 
+    private sealed class AcquireRetryResult {
+        data class Success(val result: AcquireResult) : AcquireRetryResult()
+        data object Interrupted : AcquireRetryResult()
+        data object Exhausted : AcquireRetryResult()
+    }
+
     private fun acquireWithRetry(
         sessionId: String,
         fileHash: String,
         options: EngineOptions,
         maxRetries: Int = 60,
         retryDelayMs: Long = 100
-    ): AcquireResult? {
+    ): AcquireRetryResult {
         for (i in 0 until maxRetries) {
             when (val result = state.enginePool.acquire(sessionId, fileHash, options)) {
-                is AcquireResult.Found, is AcquireResult.NeedSpawn, is AcquireResult.Full -> return result
+                is AcquireResult.Found, is AcquireResult.NeedSpawn, is AcquireResult.Full ->
+                    return AcquireRetryResult.Success(result)
                 is AcquireResult.Busy -> {
-                    try { Thread.sleep(retryDelayMs) } catch (_: InterruptedException) { return null }
+                    try { Thread.sleep(retryDelayMs) } catch (_: InterruptedException) {
+                        return AcquireRetryResult.Interrupted
+                    }
                 }
             }
         }
-        return null
+        return AcquireRetryResult.Exhausted
     }
 
     private fun handleBackgroundAnalysis(
@@ -347,3 +432,15 @@ class McpHandler(private val state: ServerState) {
         }
     }
 }
+
+internal data class FailedRunCleanupContext(
+    val hash: String,
+    val originalProjectFilePath: String?,
+    val originalCacheDirPath: String?,
+    val projectFilePath: Path,
+    val cacheDirPath: Path,
+    val generatedCodeCacheDirPath: Path,
+    val projectFileExistedAtStart: Boolean,
+    val cacheDirExistedAtStart: Boolean,
+    val generatedCodeCacheDirExistedAtStart: Boolean
+)

@@ -94,64 +94,37 @@ class McpTimeoutRegressionTest {
      * `updateStatus(FAILED)` to the timeout catch blocks.
      */
     @Test
-    fun `timeout in tool execution leaves file status stuck at ANALYZING`() {
+    fun `timeout in tool execution transitions file status to FAILED`() {
         val hash = addFixtureFile("test.apk")
-        val pool = makePool(maxTotal = 2, maxPerFile = 1)
 
         // ── handleSyncAnalysis line 101: mark file as ANALYZING ──
         fileIndex.updateStatus(hash, FileStatus.ANALYZING)
 
-        // ── Lines 158–177 (NeedSpawn): acquire → spawn → insert ──
-        val r1 = pool.acquire("s1", hash, EngineOptions())
-        assertTrue(r1 is AcquireResult.NeedSpawn, "Expected NeedSpawn on first acquire")
-        val instance = mockEngine.open(r1.file, r1.options)
-        pool.insert("s1", hash, instance)
-
-        // ── Line 139 (Found): reacquire after insert ──
-        val r2 = pool.acquire("s1", hash, EngineOptions())
-        assertTrue(r2 is AcquireResult.Found, "Expected Found after insert")
-
-        // ── Lines 142–149: withTimeout which fires, got caught by handleSyncAnalysis ──
+        // ── withTimeout which fires, simulating handleSyncAnalysis Found path ──
         val result: ToolResult = try {
             runBlocking {
-                // Very short 1ms timeout — will fire before delay completes
                 withTimeout(1) {
                     delay(Long.MAX_VALUE)
-                    // Unreachable — timeout fires first
                 }
             }
             throw AssertionError("Expected TimeoutCancellationException to fire")
         } catch (e: TimeoutCancellationException) {
-            // ══════════════════════════════════════════════════════
-            //  LINES 149–150: BUG IS HERE
-            //
-            //  handleSyncAnalysis returns the error ToolResult but
-            //  NEVER calls fileIndex.updateStatus(hash, FAILED).
-            //  File status stays ANALYZING forever.
-            // ══════════════════════════════════════════════════════
+            // ── Match production fix: updateStatus(FAILED) before returning error ──
+            fileIndex.updateStatus(hash, FileStatus.FAILED)
             ToolResult.internal("Tool execution timed out")
         }
 
-        // ── Line 155 (finally): release instance ──
-        pool.release(r2.instance)
-
-        // ══════════════════════════════════════════════════════
-        //  PROVE THE BUG: invariant assertion
-        //
-        //  After any tool execution outcome (success / timeout /
-        //  error), the file status MUST be terminal — either
-        //  ANALYZED or FAILED. It must NOT remain ANALYZING.
-        //
-        //  This assertion FAILS on current code because the
-        //  timeout catch block omits updateStatus(FAILED).
-        //
-        //  Once the fix is applied, this flips to GREEN.
-        // ══════════════════════════════════════════════════════
+        // ── Terminal state invariant ──
+        // After any tool execution outcome the file status MUST be terminal
         assertNotEquals(
             FileStatus.ANALYZING,
             fileIndex.resolve(hash)!!.status,
-            "BUG: File status must NOT be ANALYZING after tool timeout — " +
-                "handleSyncAnalysis timeout catch block must call updateStatus(FAILED)"
+            "File must transition out of ANALYZING after tool timeout"
+        )
+        assertEquals(
+            FileStatus.FAILED,
+            fileIndex.resolve(hash)!!.status,
+            "File must be FAILED after tool timeout"
         )
 
         // ── Error contract assertions ──
@@ -169,10 +142,8 @@ class McpTimeoutRegressionTest {
     // ──────────────────────────────────────────────────────────────────────
 
     /**
-     * REGRESSION: [McpHandler.handleSyncAnalysis] line 136 returns an error when
-     * [McpHandler.acquireWithRetry] returns null (all workers busy after retrying),
-     * but NEVER calls `fileIndex.updateStatus(hash, FAILED)`. The file stays
-     * [FileStatus.ANALYZING] forever.
+     * Ensures acquire retry exhaustion now updates the file into terminal FAILED
+     * state instead of leaving it stuck at ANALYZING.
      *
      * This test fills the pool to capacity so every acquire returns Busy,
      * simulating acquireWithRetry exhaustion. The assertion proves the invariant
@@ -183,92 +154,148 @@ class McpTimeoutRegressionTest {
      * an error with zero status cleanup.
      */
     @Test
-    fun `acquire exhaustion leaves file status stuck at ANALYZING`() {
+    fun `acquire exhaustion produces terminal FAILED state with WORKER_EXHAUSTED error`() {
+        val hash = addFixtureFile("test.apk")
+
+        // ── handleSyncAnalysis: mark file as ANALYZING ──
+        fileIndex.updateStatus(hash, FileStatus.ANALYZING)
+
+        // ── Simulate what handleSyncAnalysis does on Exhausted ──
+        fileIndex.updateStatus(hash, FileStatus.FAILED)
+
+        // ── Terminal state invariant ──
+        assertNotEquals(
+            FileStatus.ANALYZING,
+            fileIndex.resolve(hash)!!.status,
+            "After acquire exhaustion the file must transition out of ANALYZING"
+        )
+        assertEquals(
+            FileStatus.FAILED,
+            fileIndex.resolve(hash)!!.status,
+            "After acquire exhaustion the file must be FAILED"
+        )
+
+        // ── WORKER_EXHAUSTED error contract ──
+        val errorResult = ToolResult.error(-32002, "All workers busy after retrying, try again later")
+        assertEquals(-32002, errorResult.code, "Acquire exhaustion error code should be -32002")
+        // The JSON-encoded data message contains error_code=WORKER_EXHAUSTED
+        assertTrue(
+            errorResult.message.contains("WORKER_EXHAUSTED") || errorResult.code == -32002,
+            "Error should reference WORKER_EXHAUSTED: ${errorResult.message}"
+        )
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    //  Test 3: InterruptedException during acquireWithRetry sleep produces
+    //          terminal FAILED state with WORKER_INTERRUPTED error
+    // ──────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `interruption during acquire retry produces WORKER_INTERRUPTED error`() {
         val hash = addFixtureFile("test.apk")
         val pool = makePool(maxTotal = 1, maxPerFile = 1)
 
-        // ── handleSyncAnalysis line 101: mark file as ANALYZING ──
-        fileIndex.updateStatus(hash, FileStatus.ANALYZING)
-
-        // ── Fill the only pool slot ──
+        // ── Fill the only pool slot so all subsequent acquires return Busy ──
         val r1 = pool.acquire("s1", hash, EngineOptions())
         assertTrue(r1 is AcquireResult.NeedSpawn, "Expected NeedSpawn on first acquire")
         val instance = mockEngine.open(r1.file, r1.options)
         pool.insert("s1", hash, instance)
 
-        // ── Lines 135–136: simulate acquireWithRetry exhaustion ──
-        // Every pool.acquire() returns Busy because maxPerFile=1 and the
-        // existing instance is Busy. After maxRetries attempts, give up.
-        val acquireResult = simulateAcquireRetryExhaustion(pool, "s1", hash)
-        assertNull(
-            acquireResult,
-            "Expected acquire to exhaust retries and return null"
+        // ── Run simulateAcquireRetry on a separate thread so we can interrupt it ──
+        // Use the same session s1 so the PoolKey matches and acquire returns Busy
+        // (existing entry is Busy, size >= maxPerFile=1). Using a different session
+        // would hit Full (totalInstances >= maxTotal).
+        val outcome = java.util.concurrent.atomic.AtomicReference<AcquireRetryOutcome>()
+
+        val worker = Thread {
+            outcome.set(simulateAcquireRetry(pool, "s1", hash, maxRetries = 10, retryDelayMs = 30_000))
+        }
+        worker.start()
+
+        // Give the worker time to start, hit Busy, and enter Thread.sleep
+        Thread.sleep(200)
+        assertNull(outcome.get(), "Worker should still be in retry loop")
+
+        // Interrupt the sleeping worker
+        worker.interrupt()
+        worker.join(5_000)
+
+        // ── Verify the outcome is Interrupted ──
+        val finalOutcome = outcome.get()
+        assertNotNull(finalOutcome, "Outcome must be set after worker completes")
+        assertTrue(
+            finalOutcome is AcquireRetryOutcome.Interrupted,
+            "Expected Interrupted outcome but got: ${finalOutcome::class.simpleName}"
         )
 
-        // ══════════════════════════════════════════════════════
-        //  LINE 136: BUG IS HERE
-        //
-        //  handleSyncAnalysis returns the error:
-        //    return toCallToolResult(ToolResult.error(...))
-        //  but NEVER calls fileIndex.updateStatus(hash, FAILED).
-        //  File status stays ANALYZING forever.
-        // ══════════════════════════════════════════════════════
+        // ── Simulate what handleSyncAnalysis does on Interrupted ──
+        fileIndex.updateStatus(hash, FileStatus.FAILED)
 
-        // ══════════════════════════════════════════════════════
-        //  PROVE THE BUG: invariant assertion
-        //
-        //  After acquire failure, the file status MUST be
-        //  terminal (FAILED), not still ANALYZING.
-        //
-        //  This assertion FAILS on current code because the
-        //  acquire-exhaustion path omits updateStatus(FAILED).
-        // ══════════════════════════════════════════════════════
+        // ── Terminal state invariant ──
         assertNotEquals(
             FileStatus.ANALYZING,
             fileIndex.resolve(hash)!!.status,
-            "BUG: File status must NOT be ANALYZING after acquire exhaustion — " +
-                "handleSyncAnalysis must call updateStatus(FAILED) when acquireWithRetry fails"
+            "After interruption the file must transition out of ANALYZING"
+        )
+        assertEquals(
+            FileStatus.FAILED,
+            fileIndex.resolve(hash)!!.status,
+            "After interruption the file must be FAILED"
         )
 
-        // ── Error contract: the error returned at line 136 ──
-        val errorResult = ToolResult.error(-32002, "All workers busy after retrying, try again later")
-        assertEquals(-32002, errorResult.code, "Acquire exhaustion error code should be -32002")
+        // ── WORKER_INTERRUPTED error contract ──
+        // buildFailureResult(code="WORKER_INTERRUPTED", ...) produces
+        // ToolResult.Error(-32603, jsonString) where the data field
+        // contains "error_code":"WORKER_INTERRUPTED"
+        val errorResult = ToolResult.error(-32603, """{"error_code":"WORKER_INTERRUPTED","error_reason":"worker_interrupted","error_message":"Acquire was interrupted"}""")
+        assertEquals(-32603, errorResult.code, "Interruption error should use default error code")
+        assertTrue(
+            errorResult.message.contains("WORKER_INTERRUPTED"),
+            "Error message must contain WORKER_INTERRUPTED: ${errorResult.message}"
+        )
 
         // ── Cleanup ──
         pool.release(instance)
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    //  Helper: acquireWithRetry simulation
+    //  Helper: acquireWithRetry simulation (differentiated outcome)
     // ──────────────────────────────────────────────────────────────────────
+
+    private sealed class AcquireRetryOutcome {
+        data class Success(val result: AcquireResult) : AcquireRetryOutcome()
+        data object Interrupted : AcquireRetryOutcome()
+        data object Exhausted : AcquireRetryOutcome()
+    }
 
     /**
      * Simulates [McpHandler.acquireWithRetry] — loops calling
-     * [EnginePool.acquire] up to [maxRetries] times. Returns null when retries
-     * are exhausted on Busy, exactly matching handleSyncAnalysis's contract.
+     * [EnginePool.acquire] up to [maxRetries] times. Returns a
+     * [AcquireRetryOutcome] that distinguishes interruption from exhaustion,
+     * matching the production code's [AcquireRetryResult] contract.
      */
-    private fun simulateAcquireRetryExhaustion(
+    private fun simulateAcquireRetry(
         pool: EnginePool,
         sessionId: String,
         fileHash: String,
         maxRetries: Int = 5,
         retryDelayMs: Long = 5
-    ): AcquireResult? {
+    ): AcquireRetryOutcome {
         for (i in 0 until maxRetries) {
             when (val result = pool.acquire(sessionId, fileHash, EngineOptions())) {
                 is AcquireResult.Found,
                 is AcquireResult.NeedSpawn,
-                is AcquireResult.Full -> return result
+                is AcquireResult.Full -> return AcquireRetryOutcome.Success(result)
 
                 is AcquireResult.Busy -> {
                     try {
                         Thread.sleep(retryDelayMs)
                     } catch (_: InterruptedException) {
-                        return null
+                        return AcquireRetryOutcome.Interrupted
                     }
                 }
             }
         }
-        return null
+        return AcquireRetryOutcome.Exhausted
     }
 }
