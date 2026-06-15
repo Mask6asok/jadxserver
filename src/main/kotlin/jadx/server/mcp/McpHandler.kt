@@ -37,7 +37,7 @@ class McpHandler(private val state: ServerState) {
 
     fun createServer(): Server {
         val server = Server(
-            Implementation(name = "jadx-server", version = "0.1.3"),
+            Implementation(name = "jadx-server", version = "0.1.4"),
             ServerOptions(
                 capabilities = ServerCapabilities(
                     tools = ServerCapabilities.Tools(listChanged = true)

@@ -8,9 +8,9 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 
 - **纯 Kotlin/JVM** — 单进程架构，jadx-core 进程内嵌入，零 IPC 开销
 - **双传输模式** — 开箱支持 stdio 和 Streamable HTTP（Ktor 后端）
-- **25 个 MCP 工具** — 9 个服务端管理工具 + 16 个分析工具，覆盖 APK 全链路探索
+- **MCP 工具集** — 提供服务端管理工具与分析工具，覆盖 APK 全链路探索
 - **实例池化** — 可配置的引擎池，支持并发反编译任务，带 acquire/release/evict 生命周期
-- **会话管理** — 按客户端会话追踪，带实例亲和性
+- **会话管理** — 按客户端会话追踪，优先复用会话内实例；同一 `file_hash` 的空闲实例也可跨会话接管
 - **后台任务** — 长时间反编译在虚拟线程上执行，客户端可轮询结果
 - **空闲驱逐** — 按配置自动清理空闲引擎实例
 - **文件索引** — 基于 MD5 的文件追踪，JSON 持久化，重启不丢
@@ -52,12 +52,12 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 | `mcp` | `McpHandler.kt`、`McpToolDef.kt`、`McpResult.kt` | MCP 协议接线、工具 Schema 生成、结果格式化 |
 | `server` | `EnginePool.kt`、`FileIndex.kt`、`SessionManager.kt`、`TaskManager.kt`、`IdleEvictor.kt`、`ServerState.kt` | 实例生命周期、文件追踪、会话亲和、后台任务、驱逐 |
 | `engine` | `DecompilerEngine.kt`、`JadxEngine.kt`、`DecompiledApk.kt`、`MockEngine.kt` | 反编译器抽象、jadx 集成、零拷贝数据访问 |
-| `tools` | `ServerTools.kt`、`CoreTools.kt`、`ClassTools.kt`、`MethodTools.kt`、`SearchTools.kt`、`XrefTools.kt`、`ResourceTools.kt`、`ToolRegistry.kt` | 25 个 MCP 工具实现 |
+| `tools` | `ServerTools.kt`、`CoreTools.kt`、`ClassTools.kt`、`MethodTools.kt`、`SearchTools.kt`、`XrefTools.kt`、`ResourceTools.kt`、`ToolRegistry.kt` | MCP 工具实现 |
 | `util` | `HashUtil.kt`、`JsonExt.kt` | MD5 哈希、JSON 辅助扩展 |
 
 ## MCP 工具参考
 
-### 服务端工具（10 个）
+### 服务端工具
 
 | 工具 | 说明 |
 |------|------|
@@ -131,7 +131,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew shadowJar
 ```
 
-输出：`build/libs/jadx-server-0.1.3-all.jar`（约 25MB）
+输出：`build/libs/jadx-server-0.1.4-all.jar`（约 25MB）
 
 **分发包**（启动脚本 + 独立依赖 JAR）：
 
@@ -146,9 +146,9 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 **通过 fat JAR**：
 
 ```bash
-java -jar build/libs/jadx-server-0.1.3-all.jar
-java -jar build/libs/jadx-server-0.1.3-all.jar --xref-mode jadx
-java -jar build/libs/jadx-server-0.1.3-all.jar --stdio
+java -jar build/libs/jadx-server-0.1.4-all.jar
+java -jar build/libs/jadx-server-0.1.4-all.jar --xref-mode jadx
+java -jar build/libs/jadx-server-0.1.4-all.jar --stdio
 ```
 
 **通过分发脚本**：
@@ -170,7 +170,7 @@ jadx-server --stdio
   "mcpServers": {
     "jadx-server": {
     "command": "java",
-    "args": ["-jar", "/path/to/jadx-server-0.1.3-all.jar", "--stdio"]
+    "args": ["-jar", "/path/to/jadx-server-0.1.4-all.jar", "--stdio"]
     }
   }
 }
@@ -183,7 +183,7 @@ jadx-server --stdio
 如果服务监听在 `0.0.0.0` 或经由反向代理暴露，建议同时设置 `--public-base-url`，这样 `upload_file` 返回的上传地址会是客户端可访问的真实地址，而不是 `0.0.0.0`。
 
 ```bash
-java -jar jadx-server-0.1.3-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.4-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -206,7 +206,7 @@ java -jar jadx-server-0.1.3-all.jar --listen 127.0.0.1:8080
   "mcpServers": {
     "jadx-server": {
       "type": "local",
-    "command": ["java", "-jar", "/path/to/jadx-server-0.1.3-all.jar", "--stdio"]
+    "command": ["java", "-jar", "/path/to/jadx-server-0.1.4-all.jar", "--stdio"]
     }
   }
 }
@@ -215,7 +215,7 @@ java -jar jadx-server-0.1.3-all.jar --listen 127.0.0.1:8080
 #### OpenCode（HTTP）
 
 ```bash
-java -jar jadx-server-0.1.3-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.4-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -245,7 +245,7 @@ curl -X POST http://127.0.0.1:8080/upload \
 如果服务端使用 `--listen 0.0.0.0:<port>` 部署到远程主机或反向代理后面，请务必额外配置：
 
 ```bash
-java -jar jadx-server-0.1.3-all.jar \
+java -jar jadx-server-0.1.4-all.jar \
   --listen 0.0.0.0:19090 \
   --public-base-url https://jadx.example.com
 ```
@@ -327,7 +327,7 @@ data class ServerConfig(
 
 3. **反编译** — 客户端调用 `decompile_apk` 并传入文件哈希。引擎池获取或创建 `JadxDecompiler` 实例，将所有类加载到内存。若 `uploads/binary/<md5>/project.jadx` 已存在，则后续分析优先从该项目文件及其 `project.cache/` 恢复。支持 APK、JAR、DEX、AAB 等多种格式。
 
-4. **分析** — 客户端调用分析工具（`get_class_code`、`search_code`、`class_xrefs` 等）并传入文件哈希。源码采用按需生成：首次访问某个类时才会将该类代码写入 `project.cache/code/sources/`，而不是在打开 APK 时全量导出全部源码。代码搜索采用与 `jadx-gui` 类似的类级搜索路径：优先命中 code cache，未命中时才按需生成该类代码。`JADX` 模式的 xref 查询结果会额外缓存到 `project.cache/code/usage/`，以便后续查询复用。池复用已有实例 —— 无需重新反编译。
+4. **分析** — 客户端调用分析工具（`get_class_code`、`search_code`、`class_xrefs` 等）并传入文件哈希。源码采用按需生成：首次访问某个类时才会将该类代码写入 `project.cache/code/sources/`，而不是在打开 APK 时全量导出全部源码。代码搜索采用与 `jadx-gui` 类似的类级搜索路径：优先命中 code cache，未命中时才按需生成该类代码。`JADX` 模式的 xref 查询结果会额外缓存到 `project.cache/code/usage/`，以便后续查询复用。引擎池优先复用当前会话已有实例；若同一 `file_hash` 在其他会话上存在空闲实例，也会直接接管复用，无需重新反编译。
 
 5. **驱逐** — 空闲实例在配置的超时后自动关闭，释放 JVM 堆内存。文件索引以及 `project.jadx` 路径在重启后持久化保留。
 
@@ -351,7 +351,7 @@ src/main/kotlin/jadx/server/
 ├── mcp/             # MCP handler, tool definitions, result types
 ├── server/          # Engine pool, file index, session/task managers, eviction
 ├── engine/          # DecompilerEngine interface, JadxEngine, DecompiledApk, MockEngine
-├── tools/           # 25 tool implementations (Server, Core, Class, Method, Search, Xref, Resource)
+├── tools/           # Tool implementations (Server, Core, Class, Method, Search, Xref, Resource)
 └── util/            # Hash utilities, JSON extensions
 ```
 
