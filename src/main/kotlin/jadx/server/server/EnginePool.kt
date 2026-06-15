@@ -66,9 +66,16 @@ class EnginePool(
                     idleEntry.state = PoolState.Busy
                     return AcquireResult.Found(idleEntry.instance)
                 }
-                if (entries.size >= config.maxPerFile) {
-                    return AcquireResult.Busy
-                }
+            }
+
+            val adoptedEntry = adoptIdleInstanceForFile(key)
+            if (adoptedEntry != null) {
+                adoptedEntry.state = PoolState.Busy
+                return AcquireResult.Found(adoptedEntry.instance)
+            }
+
+            if (entries != null && entries.size >= config.maxPerFile) {
+                return AcquireResult.Busy
             }
 
             val totalInstances = instanceToKey.size
@@ -195,5 +202,24 @@ class EnginePool(
         } finally {
             lock.unlock()
         }
+    }
+
+    private fun adoptIdleInstanceForFile(targetKey: PoolKey): PoolEntry? {
+        for ((key, entries) in pool) {
+            if (key == targetKey || key.fileHash != targetKey.fileHash) {
+                continue
+            }
+            val idleEntry = entries.find { it.state == PoolState.Idle } ?: continue
+            entries.remove(idleEntry)
+            if (entries.isEmpty()) {
+                pool.remove(key)
+            }
+
+            val targetEntries = pool.getOrPut(targetKey) { mutableListOf() }
+            targetEntries.add(idleEntry)
+            instanceToKey[idleEntry.instance.instanceId] = targetKey
+            return idleEntry
+        }
+        return null
     }
 }

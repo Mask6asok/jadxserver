@@ -6,7 +6,6 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
-import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
@@ -123,7 +122,6 @@ fun startHttpServer(config: ServerConfig, state: ServerState) {
     val port = parts.getOrNull(1)?.toIntOrNull() ?: 8080
 
     embeddedServer(Netty, host = host, port = port) {
-        install(ContentNegotiation) { json(McpJson) }
         install(CORS) {
             anyHost()
             allowHeader(HttpHeaders.ContentType)

@@ -6,6 +6,7 @@ import jadx.server.server.AcquireResult
 import jadx.server.server.EnginePool
 import jadx.server.server.FileIndex
 import jadx.server.server.PoolConfig
+import jadx.server.server.PoolState
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
@@ -84,6 +85,30 @@ class EnginePoolTest {
 
         val r3 = enginePool.acquire("session1", entry3.hash, options)
         assertTrue(r3 is AcquireResult.Full)
+    }
+
+    @Test
+    fun testAcquireReusesIdleInstanceAcrossSessionsForSameFile() {
+        val testFile = tempDir.resolve("shared.apk")
+        Files.writeString(testFile, "shared apk")
+        val entry = fileIndex.add(testFile)
+        val options = EngineOptions()
+
+        val firstAcquire = enginePool.acquire("session1", entry.hash, options)
+        assertTrue(firstAcquire is AcquireResult.NeedSpawn)
+
+        val instance = engine.open(firstAcquire.file, firstAcquire.options)
+        enginePool.insert("session1", entry.hash, instance)
+        enginePool.release(instance)
+
+        val secondAcquire = enginePool.acquire("session2", entry.hash, options)
+        assertTrue(secondAcquire is AcquireResult.Found)
+        assertEquals(instance.instanceId, secondAcquire.instance.instanceId)
+
+        val instances = enginePool.listInstances()
+        assertEquals(1, instances.size)
+        assertEquals("session2", instances.first().sessionId)
+        assertEquals(PoolState.Busy, instances.first().state)
     }
 
     @Test
