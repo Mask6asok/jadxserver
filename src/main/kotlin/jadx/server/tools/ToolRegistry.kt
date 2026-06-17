@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory
 class ToolRegistry private constructor(
     val serverTools: Map<String, ServerToolHandler>,
     val analysisTools: Map<String, AnalysisToolHandler>,
+    val analysisToolWeights: Map<String, ToolWeight>,
     val allDefinitions: List<McpToolDef>
 ) {
     private val logger = LoggerFactory.getLogger(ToolRegistry::class.java)
@@ -31,6 +32,8 @@ class ToolRegistry private constructor(
 
     val analysisToolNames: Set<String> get() = analysisTools.keys
     val serverToolNames: Set<String> get() = serverTools.keys
+
+    fun analysisToolWeight(name: String): ToolWeight? = analysisToolWeights[name]
 
     fun definitionFor(name: String): McpToolDef? = allDefinitions.find { it.name == name }
 
@@ -99,9 +102,15 @@ class ToolRegistry private constructor(
     }
 
     companion object {
+        enum class ToolWeight {
+            LIGHT,
+            HEAVY,
+        }
+
         fun build(state: ServerState, transport: TransportMode): ToolRegistry {
             val serverHandlers = linkedMapOf<String, ServerToolHandler>()
             val analysisHandlers = linkedMapOf<String, AnalysisToolHandler>()
+            val analysisWeights = linkedMapOf<String, ToolWeight>()
             val defs = mutableListOf<McpToolDef>()
 
             // ── Server tools ──
@@ -125,46 +134,53 @@ class ToolRegistry private constructor(
             serverHandlers["cleanup_session_workers"] = ServerToolHandler(ServerTools::cleanupSessionWorkers)
 
             // ── Analysis tools ──
-            fun regAnalysis(list: List<McpToolDef>, vararg pairs: Pair<String, AnalysisToolHandler>) {
+            fun regAnalysis(weight: ToolWeight, list: List<McpToolDef>, vararg pairs: Pair<String, AnalysisToolHandler>) {
                 defs += list
-                for ((name, handler) in pairs) analysisHandlers[name] = handler
+                for ((name, handler) in pairs) {
+                    analysisHandlers[name] = handler
+                    analysisWeights[name] = weight
+                }
             }
 
-            regAnalysis(CoreTools.definitions(),
+            regAnalysis(ToolWeight.HEAVY, CoreTools.definitions(),
                 "decompile_apk" to AnalysisToolHandler(CoreTools::decompileApk),
                 "survey" to AnalysisToolHandler(CoreTools::survey),
                 "analysis_status" to AnalysisToolHandler(CoreTools::analysisStatus),
             )
 
-            regAnalysis(ClassTools.definitions(),
+            analysisWeights["analysis_status"] = ToolWeight.LIGHT
+
+            regAnalysis(ToolWeight.LIGHT, ClassTools.definitions(),
                 "list_classes" to AnalysisToolHandler(ClassTools::listClasses),
                 "get_class_code" to AnalysisToolHandler(ClassTools::getClassCode),
                 "class_info" to AnalysisToolHandler(ClassTools::classInfo),
             )
 
-            regAnalysis(MethodTools.definitions(),
+            regAnalysis(ToolWeight.LIGHT, MethodTools.definitions(),
                 "get_method_code" to AnalysisToolHandler(MethodTools::getMethodCode),
                 "list_methods" to AnalysisToolHandler(MethodTools::listMethods),
             )
 
-            regAnalysis(SearchTools.definitions(),
+            regAnalysis(ToolWeight.HEAVY, SearchTools.definitions(),
                 "search_code" to AnalysisToolHandler(SearchTools::searchCode),
                 "search_string" to AnalysisToolHandler(SearchTools::searchString),
                 "find_class" to AnalysisToolHandler(SearchTools::findClass),
             )
 
-            regAnalysis(ResourceTools.definitions(),
+            analysisWeights["find_class"] = ToolWeight.LIGHT
+
+            regAnalysis(ToolWeight.LIGHT, ResourceTools.definitions(),
                 "get_manifest" to AnalysisToolHandler(ResourceTools::getManifest),
                 "get_resource" to AnalysisToolHandler(ResourceTools::getResource),
                 "list_resources" to AnalysisToolHandler(ResourceTools::listResources),
             )
 
-            regAnalysis(XrefTools.definitions(),
+            regAnalysis(ToolWeight.HEAVY, XrefTools.definitions(),
                 "class_xrefs" to AnalysisToolHandler(XrefTools::classXrefs),
                 "method_xrefs" to AnalysisToolHandler(XrefTools::methodXrefs),
             )
 
-            return ToolRegistry(serverHandlers, analysisHandlers, defs)
+            return ToolRegistry(serverHandlers, analysisHandlers, analysisWeights, defs)
         }
     }
 }

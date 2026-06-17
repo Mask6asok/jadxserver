@@ -10,6 +10,7 @@ interface DecompilerEngine {
     val name: String
     fun toolSchemas(): List<McpToolDef>
     fun open(file: Path, options: EngineOptions): EngineInstance
+    fun unload(instance: EngineInstance): Boolean
     fun close(instance: EngineInstance)
     fun health(instance: EngineInstance): InstanceHealth
 }

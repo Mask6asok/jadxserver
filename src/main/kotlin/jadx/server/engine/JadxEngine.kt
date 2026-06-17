@@ -1,16 +1,22 @@
 package jadx.server.engine
 
 import jadx.api.JadxArgs
+import jadx.api.JavaClass
 import jadx.api.JadxDecompiler
 import jadx.api.impl.InMemoryCodeCache
 import jadx.api.ResourceType
 import jadx.api.usage.impl.EmptyUsageInfoCache
 import jadx.api.usage.impl.InMemoryUsageInfoCache
+import jadx.core.dex.nodes.ProcessState
 import jadx.server.config.XrefMode
 import jadx.server.mcp.McpToolDef
+import jadx.server.server.CacheState
+import jadx.server.server.ProjectCacheLayout
+import jadx.server.util.HashUtil
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 
 class JadxEngine : DecompilerEngine {
     private val logger = LoggerFactory.getLogger(JadxEngine::class.java)
@@ -77,6 +83,12 @@ class JadxEngine : DecompilerEngine {
 
     override fun open(file: Path, options: EngineOptions): EngineInstance {
         val sourceDir = options.sourceDir
+        val projectCacheLayout = sourceDir?.parent?.let(::ProjectCacheLayout)
+        val expectedCacheState = if (options.xrefMode == XrefMode.JADX && projectCacheLayout != null) {
+            buildExpectedCacheState(file, options)
+        } else {
+            null
+        }
         val args = JadxArgs().apply {
             inputFiles = (options.inputFiles ?: listOf(file)).map { it.toFile() }.toMutableList()
             threadsCount = options.threads
@@ -87,7 +99,11 @@ class JadxEngine : DecompilerEngine {
             } else {
                 InMemoryCodeCache()
             }
-            usageInfoCache = if (options.xrefMode == XrefMode.JADX) InMemoryUsageInfoCache() else EmptyUsageInfoCache()
+            usageInfoCache = when {
+                options.xrefMode != XrefMode.JADX -> EmptyUsageInfoCache()
+                projectCacheLayout != null && expectedCacheState != null -> ProjectDiskUsageInfoCache(projectCacheLayout, expectedCacheState)
+                else -> InMemoryUsageInfoCache()
+            }
             if (sourceDir != null) {
                 outDir = sourceDir.toFile()
             }
@@ -103,9 +119,11 @@ class JadxEngine : DecompilerEngine {
         val decompiler = JadxDecompiler(args)
         decompiler.load()
 
-        val classMap = decompiler.classes.associateBy { it.fullName }
+        val classes = decompiler.classes
         val resourceList = decompiler.resources
-        val apkMetadata = extractMetadata(resourceList, classMap)
+        val apkMetadata = extractMetadata(resourceList, classes)
+        val classIndex = classes.map { it.toIndexEntry() }
+        val exactNameIndex = classIndex.mapIndexed { index, entry -> entry.name to index }.toMap()
 
         if (sourceDir != null) {
             val srcOutDir = sourceDir.resolve("sources").toFile()
@@ -113,13 +131,35 @@ class JadxEngine : DecompilerEngine {
             args.outDirSrc = srcOutDir
         }
 
-        val apk = DecompiledApk(decompiler, classMap, resourceList, apkMetadata, sourceDir, options.xrefMode)
+        val apk = DecompiledApk(decompiler, classIndex, exactNameIndex, resourceList, apkMetadata, sourceDir, options.xrefMode)
 
         return EngineInstance(
             engineName = name,
             fileHash = file.fileName.toString(),
             state = apk
         )
+    }
+
+    private fun buildExpectedCacheState(file: Path, options: EngineOptions): CacheState {
+        val inputPath = (options.inputFiles ?: listOf(file)).firstOrNull() ?: file
+        return CacheState(
+            jadxVersion = JadxDecompiler.getVersion(),
+            serverBuildVersion = JadxEngine::class.java.`package`?.implementationVersion ?: "dev",
+            inputHash = HashUtil.md5(inputPath),
+            pluginOptionsFingerprint = pluginOptionsFingerprint(options.pluginOptions),
+            deobfuscationFlags = options.deobfuscate,
+            classFilter = options.classFilter,
+            xrefMode = options.xrefMode.name,
+        )
+    }
+
+    private fun pluginOptionsFingerprint(pluginOptions: Map<String, String>): String {
+        val canonical = pluginOptions.entries
+            .sortedBy { it.key }
+            .joinToString("\n") { (key, value) -> "$key=$value" }
+        return MessageDigest.getInstance("MD5")
+            .digest(canonical.toByteArray())
+            .joinToString("") { "%02x".format(it) }
     }
 
     override fun close(instance: EngineInstance) {
@@ -130,17 +170,30 @@ class JadxEngine : DecompilerEngine {
         System.gc()
     }
 
+    override fun unload(instance: EngineInstance): Boolean {
+        val apk = instance.state as? DecompiledApk ?: return false
+        val summary = apk.unloadClasses()
+        logger.debug(
+            "Unloaded {} classes for instance {} (generated={}, reset={})",
+            summary.totalClasses,
+            instance.instanceId,
+            summary.generatedAndUnloadedCount,
+            summary.notLoadedCount
+        )
+        return true
+    }
+
     override fun health(instance: EngineInstance): InstanceHealth {
         val apk = instance.state as? DecompiledApk ?: return InstanceHealth.DEAD
         return try {
-            apk.classes.size
+            apk.classCount()
             InstanceHealth.HEALTHY
         } catch (_: Exception) {
             InstanceHealth.DEAD
         }
     }
 
-    private fun extractMetadata(resources: List<jadx.api.ResourceFile>, classMap: Map<String, jadx.api.JavaClass>): ApkMetadata {
+    private fun extractMetadata(resources: List<jadx.api.ResourceFile>, classes: List<JavaClass>): ApkMetadata {
         val manifestRes = resources.find { it.type == ResourceType.MANIFEST }
         val manifestText = try {
             manifestRes?.loadContent()?.text?.codeStr
@@ -148,8 +201,8 @@ class JadxEngine : DecompilerEngine {
             null
         }
 
-        val classCount = classMap.size
-        val methodCount = classMap.values.sumOf { it.methods.size }
+        val classCount = classes.size
+        val methodCount = classes.sumOf { it.methods.size }
 
         if (manifestText == null) {
             return ApkMetadata("", null, null, classCount, methodCount, null, null, emptyList(), emptyList(), emptyList(), emptyList())

@@ -34,6 +34,7 @@ class LifecycleMockEngine(
     /** Tracks calls for post-mortem assertions. Reset via [resetCounters]. */
     var openCallCount: Int = 0; private set
     var closeCallCount: Int = 0; private set
+    var unloadCallCount: Int = 0; private set
 
     private val schemas: List<McpToolDef> = listOf(
         McpToolDef("list_classes", "List classes")
@@ -65,11 +66,17 @@ class LifecycleMockEngine(
         closeCallCount++
     }
 
+    override fun unload(instance: EngineInstance): Boolean {
+        unloadCallCount++
+        return true
+    }
+
     override fun health(instance: EngineInstance): InstanceHealth = healthResponse
 
     fun resetCounters() {
         openCallCount = 0
         closeCallCount = 0
+        unloadCallCount = 0
     }
 }
 

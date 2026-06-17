@@ -6,20 +6,20 @@ import jadx.api.JavaMethod
 import jadx.api.JadxDecompiler
 import jadx.api.ResourceFile
 import jadx.api.ResourceType
+import jadx.core.dex.nodes.ProcessState
 import jadx.core.xmlgen.ResContainer
 import jadx.server.config.XrefMode
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.Closeable
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 
-class DecompiledApk(
+class DecompiledApk internal constructor(
     private val decompiler: JadxDecompiler,
-    val classes: Map<String, JavaClass>,
+    private val classIndex: List<ClassIndexEntry>,
+    private val exactNameIndex: Map<String, Int>,
     val resources: List<ResourceFile>,
     val metadata: ApkMetadata,
     val sourceDir: Path? = null,
@@ -29,6 +29,10 @@ class DecompiledApk(
 
     var lastAccess: Instant = Instant.now()
         private set
+
+    private val resolvedClassCache = object : LinkedHashMap<String, JavaClass>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JavaClass>?): Boolean = size > RESOLVED_CLASS_CACHE_CAPACITY
+    }
 
     private fun touch() { lastAccess = Instant.now() }
 
@@ -42,12 +46,12 @@ class DecompiledApk(
         touch()
         val diskCode = readFromDisk(className)
         if (diskCode != null) return diskCode
-        return classes[className]?.code
+        return resolveClass(className)?.code
     }
 
     fun getClassInfo(className: String): ClassInfo? {
         touch()
-        val cls = classes[className] ?: return null
+        val cls = resolveClass(className) ?: return null
         val access = cls.accessInfo
         val classNode = cls.classNode
         val superClassName = classNode.superClass?.toString()
@@ -74,41 +78,42 @@ class DecompiledApk(
     fun listClasses(filter: String? = null, offset: Int = 0, count: Int = 100): List<ClassSummary> {
         touch()
         val filtered = if (filter != null) {
-            classes.values.filter { it.fullName.contains(filter, ignoreCase = true) }
+            classIndex.filter { it.name.contains(filter, ignoreCase = true) }
         } else {
-            classes.values.toList()
+            classIndex
         }
         return filtered
             .drop(offset)
             .take(count)
-            .map { cls -> toClassSummary(cls) }
+            .map { it.toSummary() }
     }
 
     fun findClass(filter: String, limit: Int = 100): List<ClassSummary> {
         touch()
-        return classes.values
-            .filter { it.fullName.contains(filter, ignoreCase = true) || it.name.contains(filter, ignoreCase = true) }
+        return classIndex.asSequence()
+            .filter { it.name.contains(filter, ignoreCase = true) || it.simpleName.contains(filter, ignoreCase = true) }
             .take(limit)
-            .map { cls -> toClassSummary(cls) }
+            .map { it.toSummary() }
+            .toList()
     }
 
     fun getMethodCode(className: String, methodName: String, signature: String? = null): String? {
         touch()
-        val cls = classes[className] ?: return null
+        val cls = resolveClass(className) ?: return null
         val method = findMethod(cls, methodName, signature) ?: return null
         return method.codeStr
     }
 
     fun listMethods(className: String): List<MethodInfo>? {
         touch()
-        val cls = classes[className] ?: return null
+        val cls = resolveClass(className) ?: return null
         return cls.methods.map { toMethodInfo(it) }
     }
 
     fun searchCode(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
         val results = mutableListOf<SearchMatch>()
-        for ((className, _) in classes) {
+        for (className in classNames()) {
             if (results.size >= limit) break
             val code = getClassCode(className) ?: continue
             code.lines().forEachIndexed { index, line ->
@@ -125,7 +130,7 @@ class DecompiledApk(
         touch()
         val pattern = Regex("\"[^\"]*${Regex.escape(query)}[^\"]*\"")
         val results = mutableListOf<SearchMatch>()
-        for ((className, _) in classes) {
+        for (className in classNames()) {
             if (results.size >= limit) break
             val code = getClassCode(className) ?: continue
             code.lines().forEachIndexed { index, line ->
@@ -144,11 +149,11 @@ class DecompiledApk(
         if (resolvedMode == XrefMode.JADX) {
             return getClassXrefsJadx(className, limit)
         }
-        val targetCls = classes[className] ?: return emptyList()
+        val targetCls = resolveClass(className) ?: return emptyList()
         val simpleName = targetCls.name
         val results = mutableListOf<XrefMatch>()
 
-        for ((otherName, otherCls) in classes) {
+        for (otherName in classNames()) {
             if (otherName == className) continue
             if (results.size >= limit) break
             val code = getClassCode(otherName) ?: continue
@@ -163,18 +168,15 @@ class DecompiledApk(
     }
 
     private fun getClassXrefsJadx(className: String, limit: Int): List<XrefMatch> {
-        readXrefCache("class", className, limit)?.let { return it }
-        val cls = classes[className] ?: return emptyList()
+        val cls = resolveClass(className) ?: return emptyList()
         val useIn = try { cls.getUseIn() } catch (_: Exception) { return emptyList() }
-        val results = useIn.take(limit).mapNotNull { node ->
+        return useIn.take(limit).mapNotNull { node ->
             when (node) {
                 is JavaClass -> XrefMatch(node.fullName, "", 0)
                 is JavaMethod -> XrefMatch(node.declaringClass.fullName, node.name, 0)
                 else -> null
             }
         }
-        writeXrefCache("class", className, results)
-        return results
     }
 
     fun getMethodXrefs(className: String, methodName: String, direction: String = "both", limit: Int = 100, mode: String? = null): List<XrefMatch> {
@@ -187,7 +189,7 @@ class DecompiledApk(
         val fullRef = "$className.$methodName"
 
         if (direction == "from" || direction == "both") {
-            val cls = classes[className] ?: return emptyList()
+            val cls = resolveClass(className) ?: return emptyList()
             for (m in cls.methods) {
                 if (results.size >= limit) break
                 val code = getClassCode(className) ?: continue
@@ -201,7 +203,7 @@ class DecompiledApk(
         }
 
         if (direction == "to" || direction == "both") {
-            for ((otherName, _) in classes) {
+            for (otherName in classNames()) {
                 if (results.size >= limit) break
                 if (otherName == className) continue
                 val code = getClassCode(otherName) ?: continue
@@ -217,9 +219,7 @@ class DecompiledApk(
     }
 
     private fun getMethodXrefsJadx(className: String, methodName: String, direction: String, limit: Int): List<XrefMatch> {
-        val cacheKey = "$className#$methodName#$direction"
-        readXrefCache("method", cacheKey, limit)?.let { return it }
-        val cls = classes[className] ?: return emptyList()
+        val cls = resolveClass(className) ?: return emptyList()
         val results = mutableListOf<XrefMatch>()
 
         if (direction == "to" || direction == "both") {
@@ -250,7 +250,6 @@ class DecompiledApk(
             }
         }
 
-        writeXrefCache("method", cacheKey, results)
         return results
     }
 
@@ -273,8 +272,63 @@ class DecompiledApk(
         return resources.map { ResourceInfo(it.originalName, it.type.name, it.originalName) }
     }
 
+    fun resolveClass(className: String): JavaClass? {
+        touch()
+        val classSlot = exactNameIndex[className] ?: return null
+        synchronized(resolvedClassCache) {
+            resolvedClassCache[className]?.let { return it }
+        }
+        val indexedName = classIndex[classSlot].name
+        val resolved = decompiler.searchJavaClassByAliasFullName(indexedName)
+            ?: decompiler.searchJavaClassByOrigFullName(indexedName)
+            ?: return null
+        synchronized(resolvedClassCache) {
+            resolvedClassCache[className] = resolved
+        }
+        return resolved
+    }
+
+    internal fun classCount(): Int = classIndex.size
+
+    internal fun hasExactClassName(className: String): Boolean = exactNameIndex.containsKey(className)
+
+    internal fun resolvedCacheKeysForTest(): List<String> = synchronized(resolvedClassCache) { resolvedClassCache.keys.toList() }
+
+    internal fun unloadClasses(): UnloadSummary {
+        touch()
+        clearResolvedClassCache()
+        var generatedAndUnloadedCount = 0
+        var notLoadedCount = 0
+        val classes = decompiler.root.getClasses()
+        for (cls in classes) {
+            val state = cls.state
+            cls.unload()
+            if (state == ProcessState.PROCESS_COMPLETE) {
+                cls.state = ProcessState.GENERATED_AND_UNLOADED
+                generatedAndUnloadedCount++
+            } else {
+                cls.state = ProcessState.NOT_LOADED
+                notLoadedCount++
+            }
+        }
+        clearResolvedClassCache()
+        logger.debug(
+            "Unloaded class internals for {} classes (generated={}, reset={})",
+            classes.size,
+            generatedAndUnloadedCount,
+            notLoadedCount
+        )
+        return UnloadSummary(classes.size, generatedAndUnloadedCount, notLoadedCount)
+    }
+
     override fun close() {
         decompiler.close()
+    }
+
+    private fun clearResolvedClassCache() {
+        synchronized(resolvedClassCache) {
+            resolvedClassCache.clear()
+        }
     }
 
     // --- Disk-based source cache helpers ---
@@ -291,53 +345,9 @@ class DecompiledApk(
         }
     }
 
-    private fun readXrefCache(kind: String, key: String, limit: Int): List<XrefMatch>? {
-        val cacheFile = xrefCacheFile(kind, key) ?: return null
-        if (!Files.exists(cacheFile)) return null
-        return try {
-            val data = xrefJson.decodeFromString<XrefCacheFile>(Files.readString(cacheFile))
-            data.results.take(limit)
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun writeXrefCache(kind: String, key: String, results: List<XrefMatch>) {
-        val cacheFile = xrefCacheFile(kind, key) ?: return
-        try {
-            Files.createDirectories(cacheFile.parent)
-            Files.writeString(cacheFile, xrefJson.encodeToString(XrefCacheFile(results)))
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun xrefCacheFile(kind: String, key: String): Path? {
-        val dir = sourceDir ?: return null
-        val safeName = buildString {
-            key.forEach { ch ->
-                append(if (ch.isLetterOrDigit() || ch == '.' || ch == '_' || ch == '-') ch else '_')
-            }
-        }
-        return dir.resolve("usage").resolve(kind).resolve("$safeName.json")
-    }
-
     // --- Private helpers ---
 
-    private fun toClassSummary(cls: JavaClass): ClassSummary {
-        val access = cls.accessInfo
-        return ClassSummary(
-            name = cls.fullName,
-            `package` = cls.getPackage() ?: "",
-            isPublic = access.isPublic,
-            isAbstract = access.isAbstract,
-            isInterface = access.isInterface,
-            isInner = cls.isInner,
-            superClass = cls.classNode.superClass?.toString(),
-            methodCount = cls.methods.size,
-            fieldCount = cls.fields.size,
-            innerClassCount = cls.innerClasses.size
-        )
-    }
+    private fun classNames(): Sequence<String> = classIndex.asSequence().map { it.name }
 
     private fun findMethod(cls: JavaClass, methodName: String, signature: String?): JavaMethod? {
         val methods = cls.methods
@@ -417,6 +427,54 @@ class DecompiledApk(
             else -> null
         }
     }
+
+    private companion object {
+        const val RESOLVED_CLASS_CACHE_CAPACITY = 128
+    }
+}
+
+internal data class ClassIndexEntry(
+    val name: String,
+    val simpleName: String,
+    val `package`: String,
+    val isPublic: Boolean,
+    val isAbstract: Boolean,
+    val isInterface: Boolean,
+    val isInner: Boolean,
+    val superClass: String?,
+    val methodCount: Int,
+    val fieldCount: Int,
+    val innerClassCount: Int
+) {
+    fun toSummary(): ClassSummary = ClassSummary(
+        name = name,
+        `package` = `package`,
+        isPublic = isPublic,
+        isAbstract = isAbstract,
+        isInterface = isInterface,
+        isInner = isInner,
+        superClass = superClass,
+        methodCount = methodCount,
+        fieldCount = fieldCount,
+        innerClassCount = innerClassCount
+    )
+}
+
+internal fun JavaClass.toIndexEntry(): ClassIndexEntry {
+    val access = accessInfo
+    return ClassIndexEntry(
+        name = fullName,
+        simpleName = name,
+        `package` = getPackage() ?: "",
+        isPublic = access.isPublic,
+        isAbstract = access.isAbstract,
+        isInterface = access.isInterface,
+        isInner = isInner,
+        superClass = classNode.superClass?.toString(),
+        methodCount = methods.size,
+        fieldCount = fields.size,
+        innerClassCount = innerClasses.size
+    )
 }
 
 data class ApkMetadata(
@@ -498,12 +556,8 @@ data class ResourceInfo(
     val path: String
 )
 
-@Serializable
-private data class XrefCacheFile(
-    val results: List<XrefMatch>
+data class UnloadSummary(
+    val totalClasses: Int,
+    val generatedAndUnloadedCount: Int,
+    val notLoadedCount: Int
 )
-
-private val xrefJson = Json {
-    prettyPrint = false
-    ignoreUnknownKeys = true
-}

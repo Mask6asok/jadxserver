@@ -30,6 +30,8 @@ class MockEngine : DecompilerEngine {
         )
     }
 
+    override fun unload(instance: EngineInstance): Boolean = true
+
     override fun close(instance: EngineInstance) {}
 
     override fun health(instance: EngineInstance): InstanceHealth = InstanceHealth.HEALTHY

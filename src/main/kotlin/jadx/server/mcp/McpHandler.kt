@@ -11,9 +11,12 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import jadx.server.engine.DecompiledApk
+import jadx.server.engine.EngineInstance
 import jadx.server.engine.EngineOptions
 import jadx.server.server.AcquireResult
 import jadx.server.server.FileStatus
+import jadx.server.server.MemoryDecision
+import jadx.server.server.MemoryDecisionType
 import jadx.server.server.ServerState
 import jadx.server.config.TransportMode
 import jadx.server.tools.CoreTools
@@ -161,12 +164,18 @@ class McpHandler(private val state: ServerState) {
                     is AcquireResult.Found -> {
                         try {
                             val apk = acquireResult.instance.state as DecompiledApk
+                            refuseForHeavyToolIfNeeded(toolName)?.let {
+                                state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                                cleanupFailedRunArtifacts(cleanupContext)
+                                return it
+                            }
                             val result = runBlocking {
                                 withTimeout(state.config.toolTimeout.toMillis()) {
                                     toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
                                 }
                             }
                             state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
+                            markHeavyAsUnloadEligible(toolName, acquireResult.instance)
                             result
                         } catch (e: TimeoutCancellationException) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
@@ -190,6 +199,11 @@ class McpHandler(private val state: ServerState) {
                         }
                     }
                     is AcquireResult.NeedSpawn -> {
+                        refuseForSpawnIfNeeded(toolName)?.let {
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                            cleanupFailedRunArtifacts(cleanupContext)
+                            return it
+                        }
                         val instance = try {
                             state.engine.open(acquireResult.file, acquireResult.options)
                         } catch (e: Exception) {
@@ -221,6 +235,7 @@ class McpHandler(private val state: ServerState) {
                                 }
                             }
                             state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
+                            markHeavyAsUnloadEligible(toolName, instance)
                             result
                         } catch (e: TimeoutCancellationException) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
@@ -333,6 +348,61 @@ class McpHandler(private val state: ServerState) {
             put("error_reason", JsonPrimitive(reason))
             put("error_message", JsonPrimitive(message))
         }.toString()))
+    }
+
+    private fun refuseForHeavyToolIfNeeded(toolName: String): CallToolResult? {
+        val weight = toolRegistry.analysisToolWeight(toolName)
+        if (weight != ToolRegistry.Companion.ToolWeight.HEAVY) {
+            return null
+        }
+        val decision = state.memoryGovernor.allowHeavyOperation()
+        if (decision.type != MemoryDecisionType.REFUSE) {
+            return null
+        }
+        return memoryPressureFailure(toolName, "reuse existing worker", decision)
+    }
+
+    private fun refuseForSpawnIfNeeded(toolName: String): CallToolResult? {
+        val decision = state.memoryGovernor.allowSpawn()
+        if (decision.type != MemoryDecisionType.REFUSE) {
+            return null
+        }
+        return memoryPressureFailure(toolName, "spawn worker", decision)
+    }
+
+    private fun markHeavyAsUnloadEligible(toolName: String, instance: EngineInstance) {
+        val weight = toolRegistry.analysisToolWeight(toolName)
+        if (weight == ToolRegistry.Companion.ToolWeight.HEAVY) {
+            state.enginePool.markUnloadEligible(instance)
+        }
+    }
+
+    private fun memoryPressureFailure(
+        toolName: String,
+        operation: String,
+        decision: MemoryDecision
+    ): CallToolResult {
+        val snapshot = decision.snapshot
+        val message = buildString {
+            append("Refused to ")
+            append(operation)
+            append(" for tool '")
+            append(toolName)
+            append("' due to memory pressure: ")
+            append(decision.reason)
+            append(" (level=")
+            append(decision.level.name)
+            append(", used_ratio=")
+            append("%.3f".format(snapshot.usedRatio))
+            append(", headroom_mb=")
+            append(snapshot.headroomBytes / (1024 * 1024))
+            append(')')
+        }
+        return buildFailureResult(
+            code = "MEMORY_PRESSURE",
+            reason = "memory_pressure",
+            message = message
+        )
     }
 
     private sealed class AcquireRetryResult {

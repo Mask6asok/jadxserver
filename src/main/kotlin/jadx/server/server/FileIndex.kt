@@ -39,6 +39,7 @@ data class FileIndexData(
 
 class FileIndex(private val uploadDir: Path? = null) {
     private val entries = ConcurrentHashMap<String, FileEntry>()
+    private var maxEntries: Int? = null
 
     /**
      * Add a file to the index. If [moveToDir] is provided, the file is copied into
@@ -73,6 +74,7 @@ class FileIndex(private val uploadDir: Path? = null) {
             status = FileStatus.UPLOADED
         )
         entries[hash] = entry
+        enforceMaxEntries()
         autoPersist()
         return entry
     }
@@ -81,6 +83,30 @@ class FileIndex(private val uploadDir: Path? = null) {
         val removed = entries.remove(hash)
         if (removed != null) autoPersist()
         return removed
+    }
+
+    fun setMaxEntries(max: Int) {
+        maxEntries = max
+        enforceMaxEntries()
+    }
+
+    /**
+     * Evict oldest entries (by storedAt timestamp) when count exceeds [maxEntries].
+     * Called on every add() and periodically by IdleEvictor.
+     */
+    fun enforceMaxEntries() {
+        val max = maxEntries ?: return
+        if (entries.size <= max) return
+        val toRemove = entries.values
+            .sortedByDescending { it.storedAt }
+            .drop(max)
+            .map { it.hash }
+        for (hash in toRemove) {
+            entries.remove(hash)
+        }
+        if (toRemove.isNotEmpty()) {
+            autoPersist()
+        }
     }
 
     fun resolve(hashOrMd5: String): FileEntry? {

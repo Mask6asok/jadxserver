@@ -9,7 +9,8 @@ import java.time.Instant
 
 class ServerState(
     val config: ServerConfig,
-    val engine: DecompilerEngine = JadxEngine()
+    val engine: DecompilerEngine = JadxEngine(),
+    val memoryGovernor: MemoryGovernor = MemoryGovernor()
 ) {
     val fileIndex: FileIndex
     val enginePool: EnginePool
@@ -21,6 +22,7 @@ class ServerState(
     init {
         Files.createDirectories(config.uploadDir)
         fileIndex = FileIndex.loadFromUploadDir(config.uploadDir)
+        fileIndex.setMaxEntries(config.maxCachedApks)
         val poolConfig = PoolConfig(
             maxTotal = if (config.maxInstances > 0) config.maxInstances
             else maxOf(1, minOf(Runtime.getRuntime().availableProcessors() / 4, 2)),
@@ -28,7 +30,7 @@ class ServerState(
             idleTimeout = config.idleTimeout
         )
         enginePool = EnginePool(poolConfig, engine, fileIndex)
-        idleEvictor = IdleEvictor(enginePool, engine, config.idleTimeout, config.cleanupInterval)
+        idleEvictor = IdleEvictor(enginePool, engine, memoryGovernor, config.idleTimeout, config.cleanupInterval, taskManager, fileIndex)
         idleEvictor.start()
     }
 

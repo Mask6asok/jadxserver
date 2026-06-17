@@ -62,16 +62,19 @@ application {
     mainClass.set("jadx.server.MainKt")
     applicationDefaultJvmArgs = listOf(
         "-Xms256M",
+        "-XX:MaxRAMPercentage=70.0",
         "-XX:+UseG1GC",
         "-XX:MaxGCPauseMillis=200",
         "-XX:G1PeriodicGCInterval=30000",
         "-XX:InitiatingHeapOccupancyPercent=45",
+        "-XX:+HeapDumpOnOutOfMemoryError",
+        "-XX:HeapDumpPath=./oom.hprof",
     )
 }
 
 tasks.test {
     useJUnitPlatform()
-    jvmArgs("-Xms256M", "-Xmx4G", "-XX:+UseG1GC")
+    jvmArgs("-Xms256M", "-Xmx8G", "-XX:+UseG1GC")
 }
 
 tasks.shadowJar {

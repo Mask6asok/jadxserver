@@ -21,7 +21,9 @@ enum class PoolState {
 data class PoolEntry(
     val instance: EngineInstance,
     var state: PoolState = PoolState.Idle,
-    var lastReleased: Instant = Instant.now()
+    var lastReleased: Instant = Instant.now(),
+    var unloadEligible: Boolean = false,
+    var lastUnloadAt: Instant? = null
 )
 
 sealed class AcquireResult {
@@ -42,7 +44,9 @@ data class InstanceInfo(
     val fileHash: String,
     val sessionId: String,
     val state: PoolState,
-    val openedAt: Instant
+    val openedAt: Instant,
+    val unloadEligible: Boolean,
+    val lastUnloadAt: Instant?
 )
 
 class EnginePool(
@@ -124,6 +128,44 @@ class EnginePool(
         }
     }
 
+    fun markUnloadEligible(instance: EngineInstance, eligible: Boolean = true): Boolean {
+        lock.lock()
+        try {
+            val entry = findEntry(instance) ?: return false
+            entry.unloadEligible = eligible
+            return true
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun unload(instance: EngineInstance): Boolean {
+        lock.lock()
+        try {
+            val entry = findEntry(instance) ?: return false
+            if (entry.state != PoolState.Idle) {
+                return false
+            }
+            if (!engine.unload(entry.instance)) {
+                return false
+            }
+            entry.unloadEligible = false
+            entry.lastUnloadAt = Instant.now()
+            return true
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun metadataFor(instance: EngineInstance): PoolEntry? {
+        lock.lock()
+        try {
+            return findEntry(instance)?.copy()
+        } finally {
+            lock.unlock()
+        }
+    }
+
     fun evict(timeout: Duration): List<EngineInstance> {
         lock.lock()
         try {
@@ -168,7 +210,9 @@ class EnginePool(
                             fileHash = key.fileHash,
                             sessionId = key.sessionId,
                             state = entry.state,
-                            openedAt = entry.instance.openedAt
+                            openedAt = entry.instance.openedAt,
+                            unloadEligible = entry.unloadEligible,
+                            lastUnloadAt = entry.lastUnloadAt
                         )
                     )
                 }
@@ -221,5 +265,11 @@ class EnginePool(
             return idleEntry
         }
         return null
+    }
+
+    private fun findEntry(instance: EngineInstance): PoolEntry? {
+        val key = instanceToKey[instance.instanceId] ?: return null
+        val entries = pool[key] ?: return null
+        return entries.find { it.instance.instanceId == instance.instanceId }
     }
 }

@@ -8,6 +8,7 @@ import jadx.server.config.TransportMode
 import jadx.server.mcp.ToolResult
 import jadx.server.server.ServerState
 import jadx.server.tools.ToolRegistry
+import jadx.server.tools.ToolRegistry.Companion.ToolWeight
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -52,5 +53,12 @@ class ToolRegistryTest {
 
         assertTrue(result is ToolResult.Error)
         assertEquals(-32601, result.code)
+    }
+
+    @Test
+    fun testAnalysisToolWeightResolution() {
+        assertEquals(ToolWeight.HEAVY, registry.analysisToolWeight("decompile_apk"), "heavy tool")
+        assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("list_classes"), "light tool")
+        assertNull(registry.analysisToolWeight("non_existent_tool"), "unknown tool")
     }
 }
