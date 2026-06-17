@@ -236,6 +236,7 @@ class McpHandler(private val state: ServerState) {
                             }
                             state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                             markHeavyAsUnloadEligible(toolName, instance)
+                            markHeavyAsUnloadEligible(toolName, instance)
                             result
                         } catch (e: TimeoutCancellationException) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
@@ -374,6 +375,17 @@ class McpHandler(private val state: ServerState) {
         val weight = toolRegistry.analysisToolWeight(toolName)
         if (weight == ToolRegistry.Companion.ToolWeight.HEAVY) {
             state.enginePool.markUnloadEligible(instance)
+        }
+    }
+
+    private fun unloadHeavyAfterOpen(toolName: String, instance: EngineInstance) {
+        if (toolRegistry.analysisToolWeight(toolName) != ToolRegistry.Companion.ToolWeight.HEAVY) {
+            return
+        }
+        try {
+            state.engine.unload(instance)
+        } catch (e: Exception) {
+            logger.warn("Failed to unload instance {} after heavy tool {}: {}", instance.instanceId, toolName, e.message)
         }
     }
 

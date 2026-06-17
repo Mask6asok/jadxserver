@@ -1,7 +1,7 @@
 #!/bin/zsh
 java \
   -Xms256M \
-  -XX:MaxRAMPercentage=70.0 \
+  -XX:MaxRAMPercentage=50.0 \
   -XX:+UseG1GC \
   -XX:MaxGCPauseMillis=200 \
   -XX:G1PeriodicGCInterval=30000 \
