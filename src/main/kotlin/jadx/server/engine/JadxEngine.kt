@@ -3,10 +3,8 @@ package jadx.server.engine
 import jadx.api.JadxArgs
 import jadx.api.JavaClass
 import jadx.api.JadxDecompiler
-import jadx.api.impl.InMemoryCodeCache
 import jadx.api.ResourceType
 import jadx.api.usage.impl.EmptyUsageInfoCache
-import jadx.api.usage.impl.InMemoryUsageInfoCache
 import jadx.core.dex.nodes.ProcessState
 import jadx.server.config.XrefMode
 import jadx.server.mcp.McpToolDef
@@ -17,6 +15,7 @@ import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.util.Comparator
 
 class JadxEngine : DecompilerEngine {
     private val logger = LoggerFactory.getLogger(JadxEngine::class.java)
@@ -82,62 +81,79 @@ class JadxEngine : DecompilerEngine {
     )
 
     override fun open(file: Path, options: EngineOptions): EngineInstance {
-        val sourceDir = options.sourceDir
-        val projectCacheLayout = sourceDir?.parent?.let(::ProjectCacheLayout)
-        val expectedCacheState = if (options.xrefMode == XrefMode.JADX && projectCacheLayout != null) {
-            buildExpectedCacheState(file, options)
+        val ownedCacheDir = if (options.sourceDir == null) {
+            Files.createTempDirectory("jadx-server-cache-")
         } else {
             null
         }
-        val args = JadxArgs().apply {
-            inputFiles = (options.inputFiles ?: listOf(file)).map { it.toFile() }.toMutableList()
-            threadsCount = options.threads
-            isDeobfuscationOn = options.deobfuscate
-            isSkipResources = options.skipResources
-            codeCache = if (sourceDir != null) {
-                ProjectDiskCodeCache(sourceDir)
+        try {
+            val sourceDir = options.sourceDir ?: ownedCacheDir!!.resolve("code")
+            val projectCacheLayout = sourceDir.parent.let(::ProjectCacheLayout)
+            val expectedCacheState = if (options.xrefMode == XrefMode.JADX) {
+                buildExpectedCacheState(file, options)
             } else {
-                InMemoryCodeCache()
+                null
             }
-            usageInfoCache = when {
-                options.xrefMode != XrefMode.JADX -> EmptyUsageInfoCache()
-                projectCacheLayout != null && expectedCacheState != null -> ProjectDiskUsageInfoCache(projectCacheLayout, expectedCacheState)
-                else -> InMemoryUsageInfoCache()
-            }
-            if (sourceDir != null) {
+            val args = JadxArgs().apply {
+                inputFiles = (options.inputFiles ?: listOf(file)).map { it.toFile() }.toMutableList()
+                threadsCount = options.threads
+                isDeobfuscationOn = options.deobfuscate
+                isSkipResources = options.skipResources
+                codeCache = ProjectDiskCodeCache(sourceDir)
+                usageInfoCache = when {
+                    options.xrefMode != XrefMode.JADX -> EmptyUsageInfoCache()
+                    expectedCacheState != null -> ProjectDiskUsageInfoCache(projectCacheLayout, expectedCacheState)
+                    else -> EmptyUsageInfoCache()
+                }
                 outDir = sourceDir.toFile()
+                if (options.classFilter != null) {
+                    val filterPattern = options.classFilter
+                    classFilter = java.util.function.Predicate { it.contains(filterPattern) }
+                }
+                if (options.pluginOptions.isNotEmpty()) {
+                    pluginOptions.putAll(options.pluginOptions)
+                }
             }
-            if (options.classFilter != null) {
-                val filterPattern = options.classFilter
-                classFilter = java.util.function.Predicate { it.contains(filterPattern) }
-            }
-            if (options.pluginOptions.isNotEmpty()) {
-                pluginOptions.putAll(options.pluginOptions)
-            }
-        }
 
-        val decompiler = JadxDecompiler(args)
-        decompiler.load()
+            val decompiler = JadxDecompiler(args)
+            decompiler.load()
 
-        val classes = decompiler.classes
-        val resourceList = decompiler.resources
-        val apkMetadata = extractMetadata(resourceList, classes)
-        val classIndex = classes.map { it.toIndexEntry() }
-        val exactNameIndex = classIndex.mapIndexed { index, entry -> entry.name to index }.toMap()
+            val classes = decompiler.classes
+            val resourceList = decompiler.resources
+            val apkMetadata = extractMetadata(resourceList, classes)
+            val classIndex = classes.map { it.toIndexEntry() }
+            val exactNameIndex = classIndex.mapIndexed { index, entry -> entry.name to index }.toMap()
 
-        if (sourceDir != null) {
             val srcOutDir = sourceDir.resolve("sources").toFile()
             srcOutDir.mkdirs()
             args.outDirSrc = srcOutDir
+
+            val apk = DecompiledApk(
+                decompiler,
+                classIndex,
+                exactNameIndex,
+                resourceList,
+                apkMetadata,
+                sourceDir,
+                options.xrefMode,
+                ownedCacheDir
+            )
+
+            return EngineInstance(
+                engineName = name,
+                fileHash = file.fileName.toString(),
+                state = apk
+            )
+        } catch (e: Exception) {
+            if (ownedCacheDir != null) {
+                try {
+                    deleteRecursivelyIfExists(ownedCacheDir)
+                } catch (cleanupError: Exception) {
+                    logger.warn("Failed to delete temporary cache directory {} after open failure: {}", ownedCacheDir, cleanupError.message)
+                }
+            }
+            throw e
         }
-
-        val apk = DecompiledApk(decompiler, classIndex, exactNameIndex, resourceList, apkMetadata, sourceDir, options.xrefMode)
-
-        return EngineInstance(
-            engineName = name,
-            fileHash = file.fileName.toString(),
-            state = apk
-        )
     }
 
     private fun buildExpectedCacheState(file: Path, options: EngineOptions): CacheState {
@@ -246,5 +262,14 @@ class JadxEngine : DecompilerEngine {
     private fun extractAndroidAttrValue(xml: String, tagName: String, attrName: String): String? {
         val regex = Regex("""<$tagName[^>]*$attrName\s*=\s*"([^"]*)"""")
         return regex.find(xml)?.groupValues?.get(1)
+    }
+
+    private fun deleteRecursivelyIfExists(path: Path) {
+        if (!Files.exists(path)) {
+            return
+        }
+        Files.walk(path)
+            .sorted(Comparator.reverseOrder())
+            .forEach { Files.deleteIfExists(it) }
     }
 }

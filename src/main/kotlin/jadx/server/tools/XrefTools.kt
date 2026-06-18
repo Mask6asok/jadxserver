@@ -40,6 +40,9 @@ object XrefTools {
                         put("class_name", JsonPrimitive(x.className))
                         put("method_name", JsonPrimitive(x.methodName))
                         put("line", JsonPrimitive(x.line))
+                        put("source_class_name", JsonPrimitive(x.sourceClassName))
+                        put("source_method_name", JsonPrimitive(x.sourceMethodName))
+                        put("content", JsonPrimitive(x.content))
                     })
                 }
             })
@@ -67,6 +70,9 @@ object XrefTools {
                             put("class_name", JsonPrimitive(x.className))
                             put("method_name", JsonPrimitive(x.methodName))
                             put("line", JsonPrimitive(x.line))
+                            put("source_class_name", JsonPrimitive(x.sourceClassName))
+                            put("source_method_name", JsonPrimitive(x.sourceMethodName))
+                            put("content", JsonPrimitive(x.content))
                         })
                     }
                 })
@@ -81,6 +87,9 @@ object XrefTools {
                             put("class_name", JsonPrimitive(x.className))
                             put("method_name", JsonPrimitive(x.methodName))
                             put("line", JsonPrimitive(x.line))
+                            put("source_class_name", JsonPrimitive(x.sourceClassName))
+                            put("source_method_name", JsonPrimitive(x.sourceMethodName))
+                            put("content", JsonPrimitive(x.content))
                         })
                     }
                 })

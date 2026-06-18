@@ -131,7 +131,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew shadowJar
 ```
 
-输出：`build/libs/jadx-server-0.1.4-all.jar`（约 25MB）
+输出：`build/libs/jadx-server-0.1.6-all.jar`（约 25MB）
 
 **分发包**（启动脚本 + 独立依赖 JAR）：
 
@@ -146,9 +146,9 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 **通过 fat JAR**：
 
 ```bash
-java -jar build/libs/jadx-server-0.1.4-all.jar
-java -jar build/libs/jadx-server-0.1.4-all.jar --xref-mode jadx
-java -jar build/libs/jadx-server-0.1.4-all.jar --stdio
+java -jar build/libs/jadx-server-0.1.6-all.jar
+java -jar build/libs/jadx-server-0.1.6-all.jar --xref-mode jadx
+java -jar build/libs/jadx-server-0.1.6-all.jar --stdio
 ```
 
 **通过分发脚本**：
@@ -170,7 +170,7 @@ jadx-server --stdio
   "mcpServers": {
     "jadx-server": {
     "command": "java",
-    "args": ["-jar", "/path/to/jadx-server-0.1.4-all.jar", "--stdio"]
+    "args": ["-jar", "/path/to/jadx-server-0.1.6-all.jar", "--stdio"]
     }
   }
 }
@@ -183,7 +183,7 @@ jadx-server --stdio
 如果服务监听在 `0.0.0.0` 或经由反向代理暴露，建议同时设置 `--public-base-url`，这样 `upload_file` 返回的上传地址会是客户端可访问的真实地址，而不是 `0.0.0.0`。
 
 ```bash
-java -jar jadx-server-0.1.4-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.6-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -206,7 +206,7 @@ java -jar jadx-server-0.1.4-all.jar --listen 127.0.0.1:8080
   "mcpServers": {
     "jadx-server": {
       "type": "local",
-    "command": ["java", "-jar", "/path/to/jadx-server-0.1.4-all.jar", "--stdio"]
+    "command": ["java", "-jar", "/path/to/jadx-server-0.1.6-all.jar", "--stdio"]
     }
   }
 }
@@ -215,7 +215,7 @@ java -jar jadx-server-0.1.4-all.jar --listen 127.0.0.1:8080
 #### OpenCode（HTTP）
 
 ```bash
-java -jar jadx-server-0.1.4-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.6-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -245,7 +245,7 @@ curl -X POST http://127.0.0.1:8080/upload \
 如果服务端使用 `--listen 0.0.0.0:<port>` 部署到远程主机或反向代理后面，请务必额外配置：
 
 ```bash
-java -jar jadx-server-0.1.4-all.jar \
+java -jar jadx-server-0.1.6-all.jar \
   --listen 0.0.0.0:19090 \
   --public-base-url https://jadx.example.com
 ```

@@ -3,9 +3,12 @@ package jadx.server.engine
 import jadx.api.JavaClass
 import jadx.api.JavaField
 import jadx.api.JavaMethod
+import jadx.api.JavaNode
 import jadx.api.JadxDecompiler
 import jadx.api.ResourceFile
 import jadx.api.ResourceType
+import jadx.api.ICodeInfo
+import jadx.api.utils.CodeUtils
 import jadx.core.dex.nodes.ProcessState
 import jadx.core.xmlgen.ResContainer
 import jadx.server.config.XrefMode
@@ -15,6 +18,7 @@ import java.io.Closeable
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
+import java.util.Comparator
 
 class DecompiledApk internal constructor(
     private val decompiler: JadxDecompiler,
@@ -23,7 +27,8 @@ class DecompiledApk internal constructor(
     val resources: List<ResourceFile>,
     val metadata: ApkMetadata,
     val sourceDir: Path? = null,
-    val xrefMode: XrefMode = XrefMode.JADX
+    val xrefMode: XrefMode = XrefMode.JADX,
+    private val ownedCacheDir: Path? = null
 ) : Closeable {
     private val logger = LoggerFactory.getLogger(DecompiledApk::class.java)
 
@@ -112,35 +117,41 @@ class DecompiledApk internal constructor(
 
     fun searchCode(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
-        val results = mutableListOf<SearchMatch>()
-        for (className in classNames()) {
-            if (results.size >= limit) break
-            val code = getClassCode(className) ?: continue
-            code.lines().forEachIndexed { index, line ->
-                if (results.size >= limit) return@forEachIndexed
-                if (line.contains(query, ignoreCase = true)) {
-                    results.add(SearchMatch(className, index + 1, line.trim()))
+        return runFullCodeScan {
+            val results = mutableListOf<SearchMatch>()
+            for ((processed, className) in classNames().withIndex()) {
+                if (results.size >= limit) break
+                guardFullScanMemory(processed)
+                val code = getClassCode(className) ?: continue
+                for ((index, line) in code.lineSequence().withIndex()) {
+                    if (results.size >= limit) break
+                    if (line.contains(query, ignoreCase = true)) {
+                        results.add(SearchMatch(className, index + 1, line.trim()))
+                    }
                 }
             }
+            results
         }
-        return results
     }
 
     fun searchString(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
-        val pattern = Regex("\"[^\"]*${Regex.escape(query)}[^\"]*\"")
-        val results = mutableListOf<SearchMatch>()
-        for (className in classNames()) {
-            if (results.size >= limit) break
-            val code = getClassCode(className) ?: continue
-            code.lines().forEachIndexed { index, line ->
-                if (results.size >= limit) return@forEachIndexed
-                if (pattern.containsMatchIn(line)) {
-                    results.add(SearchMatch(className, index + 1, line.trim()))
+        return runFullCodeScan {
+            val pattern = Regex("\"[^\"]*${Regex.escape(query)}[^\"]*\"")
+            val results = mutableListOf<SearchMatch>()
+            for ((processed, className) in classNames().withIndex()) {
+                if (results.size >= limit) break
+                guardFullScanMemory(processed)
+                val code = getClassCode(className) ?: continue
+                for ((index, line) in code.lineSequence().withIndex()) {
+                    if (results.size >= limit) break
+                    if (pattern.containsMatchIn(line)) {
+                        results.add(SearchMatch(className, index + 1, line.trim()))
+                    }
                 }
             }
+            results
         }
-        return results
     }
 
     fun getClassXrefs(className: String, limit: Int = 100, mode: String? = null): List<XrefMatch> {
@@ -153,29 +164,36 @@ class DecompiledApk internal constructor(
         val simpleName = targetCls.name
         val results = mutableListOf<XrefMatch>()
 
-        for (otherName in classNames()) {
-            if (otherName == className) continue
-            if (results.size >= limit) break
-            val code = getClassCode(otherName) ?: continue
-            code.lines().forEachIndexed { index, line ->
-                if (results.size >= limit) return@forEachIndexed
-                if (line.contains(simpleName) || line.contains(className)) {
-                    results.add(XrefMatch(otherName, "", index + 1))
+        return runFullCodeScan {
+            for ((processed, otherName) in classNames().withIndex()) {
+                if (otherName == className) continue
+                if (results.size >= limit) break
+                guardFullScanMemory(processed)
+                val code = getClassCode(otherName) ?: continue
+                for ((index, line) in code.lineSequence().withIndex()) {
+                    if (results.size >= limit) break
+                    if (line.contains(simpleName) || line.contains(className)) {
+                        results.add(XrefMatch(otherName, "", index + 1))
+                    }
                 }
             }
+            results
         }
-        return results
     }
 
     private fun getClassXrefsJadx(className: String, limit: Int): List<XrefMatch> {
         val cls = resolveClass(className) ?: return emptyList()
-        val useIn = try { cls.getUseIn() } catch (_: Exception) { return emptyList() }
-        return useIn.take(limit).mapNotNull { node ->
-            when (node) {
-                is JavaClass -> XrefMatch(node.fullName, "", 0)
-                is JavaMethod -> XrefMatch(node.declaringClass.fullName, node.name, 0)
-                else -> null
+        return runLocatedUsageScan {
+            val results = mutableListOf<XrefMatch>()
+            val seen = linkedSetOf<String>()
+            appendLocatedUsage(results, seen, cls, safeUseIn(cls), limit)
+            for (mth in cls.methods) {
+                if (results.size >= limit) break
+                if (mth.isConstructor) {
+                    appendLocatedUsage(results, seen, mth, safeUseIn(mth), limit)
+                }
             }
+            results
         }
     }
 
@@ -185,72 +203,73 @@ class DecompiledApk internal constructor(
         if (resolvedMode == XrefMode.JADX) {
             return getMethodXrefsJadx(className, methodName, direction, limit)
         }
-        val results = mutableListOf<XrefMatch>()
-        val fullRef = "$className.$methodName"
+        return runFullCodeScan {
+            val results = mutableListOf<XrefMatch>()
+            val fullRef = "$className.$methodName"
 
-        if (direction == "from" || direction == "both") {
-            val cls = resolveClass(className) ?: return emptyList()
-            for (m in cls.methods) {
-                if (results.size >= limit) break
-                val code = getClassCode(className) ?: continue
-                for ((idx, line) in code.lines().withIndex()) {
+            if (direction == "from" || direction == "both") {
+                val cls = resolveClass(className) ?: return@runFullCodeScan emptyList()
+                val code = getClassCode(className) ?: return@runFullCodeScan emptyList()
+                for (m in cls.methods) {
                     if (results.size >= limit) break
-                    if (idx > 0 && line.contains(methodName)) {
-                        results.add(XrefMatch(className, m.name, idx + 1))
+                    for ((idx, line) in code.lineSequence().withIndex()) {
+                        if (results.size >= limit) break
+                        if (idx > 0 && line.contains(methodName)) {
+                            results.add(XrefMatch(className, m.name, idx + 1))
+                        }
                     }
                 }
             }
-        }
 
-        if (direction == "to" || direction == "both") {
-            for (otherName in classNames()) {
-                if (results.size >= limit) break
-                if (otherName == className) continue
-                val code = getClassCode(otherName) ?: continue
-                code.lines().forEachIndexed { index, line ->
-                    if (results.size >= limit) return@forEachIndexed
-                    if (line.contains(fullRef) || line.contains(methodName)) {
-                        results.add(XrefMatch(otherName, "", index + 1))
+            if (direction == "to" || direction == "both") {
+                for ((processed, otherName) in classNames().withIndex()) {
+                    if (results.size >= limit) break
+                    if (otherName == className) continue
+                    guardFullScanMemory(processed)
+                    val code = getClassCode(otherName) ?: continue
+                    for ((index, line) in code.lineSequence().withIndex()) {
+                        if (results.size >= limit) break
+                        if (line.contains(fullRef) || line.contains(methodName)) {
+                            results.add(XrefMatch(otherName, "", index + 1))
+                        }
                     }
                 }
             }
+            results
         }
-        return results
     }
 
     private fun getMethodXrefsJadx(className: String, methodName: String, direction: String, limit: Int): List<XrefMatch> {
         val cls = resolveClass(className) ?: return emptyList()
-        val results = mutableListOf<XrefMatch>()
+        return runLocatedUsageScan {
+            val results = mutableListOf<XrefMatch>()
+            val seen = linkedSetOf<String>()
 
-        if (direction == "to" || direction == "both") {
-            val methods = cls.methods.filter { it.name == methodName }
-            for (m in methods) {
-                if (results.size >= limit) break
-                val useIn = try { m.getUseIn() } catch (_: Exception) { emptyList() }
-                for (caller in useIn) {
+            if (direction == "to" || direction == "both") {
+                val methods = cls.methods.filter { it.name == methodName }
+                    .flatMap { methodWithOverrides(it) }
+                    .distinctBy { it.fullName }
+                for (m in methods) {
                     if (results.size >= limit) break
-                    when (caller) {
-                        is JavaMethod -> results.add(XrefMatch(caller.declaringClass.fullName, caller.name, 0))
-                        is JavaClass -> results.add(XrefMatch(caller.fullName, "", 0))
-                        else -> {}
+                    appendLocatedUsage(results, seen, m, safeUseIn(m), limit)
+                }
+            }
+
+            if (direction == "from" || direction == "both") {
+                val methods = cls.methods.filter { it.name == methodName }
+                for (m in methods) {
+                    if (results.size >= limit) break
+                    val used = try { m.getUsed() } catch (_: Exception) { emptySet() }
+                    for (callee in used) {
+                        if (results.size >= limit) break
+                        if (callee !is JavaMethod) continue
+                        appendLocatedCalleeUsage(results, seen, caller = m, callee = callee, limit = limit)
                     }
                 }
             }
-        }
 
-        if (direction == "from" || direction == "both") {
-            val methods = cls.methods.filter { it.name == methodName }
-            for (m in methods) {
-                if (results.size >= limit) break
-                val used = try { m.getUsed() } catch (_: Exception) { emptySet() }
-                for (callee in used) {
-                    if (results.size >= limit) break
-                    results.add(XrefMatch(callee.declaringClass.fullName, callee.name, 0))
-                }
-            }
+            results
         }
-
-        return results
     }
 
     fun getManifest(): String? {
@@ -322,12 +341,29 @@ class DecompiledApk internal constructor(
     }
 
     override fun close() {
-        decompiler.close()
+        try {
+            decompiler.close()
+        } finally {
+            ownedCacheDir?.let { deleteRecursivelyIfExists(it) }
+        }
     }
 
     private fun clearResolvedClassCache() {
         synchronized(resolvedClassCache) {
             resolvedClassCache.clear()
+        }
+    }
+
+    private fun deleteRecursivelyIfExists(path: Path) {
+        if (!Files.exists(path)) {
+            return
+        }
+        try {
+            Files.walk(path)
+                .sorted(Comparator.reverseOrder())
+                .forEach { Files.deleteIfExists(it) }
+        } catch (e: Exception) {
+            logger.warn("Failed to delete owned cache directory {}: {}", path, e.message)
         }
     }
 
@@ -348,6 +384,188 @@ class DecompiledApk internal constructor(
     // --- Private helpers ---
 
     private fun classNames(): Sequence<String> = classIndex.asSequence().map { it.name }
+
+    private fun <T> runFullCodeScan(block: () -> T): T {
+        return try {
+            block()
+        } finally {
+            unloadClasses()
+            System.gc()
+        }
+    }
+
+    private fun <T> runLocatedUsageScan(block: () -> T): T {
+        return try {
+            block()
+        } finally {
+            unloadClasses()
+            System.gc()
+        }
+    }
+
+    private fun appendLocatedUsage(
+        results: MutableList<XrefMatch>,
+        seen: MutableSet<String>,
+        searchNode: JavaNode,
+        useNodes: List<JavaNode>,
+        limit: Int
+    ) {
+        val useClasses = useNodes
+            .mapNotNull { runCatching { it.topParentClass }.getOrNull() }
+            .distinctBy { it.fullName }
+        for (topUseClass in useClasses) {
+            if (results.size >= limit) break
+            val matches = locateUsePlaces(
+                searchNode = searchNode,
+                topUseClass = topUseClass,
+                resultClassName = null,
+                resultMethodName = null,
+            )
+            if (matches.isEmpty()) {
+                val fallback = fallbackXrefForUseNode(topUseClass)
+                appendUnique(results, seen, fallback, limit)
+                continue
+            }
+            for (match in matches) {
+                appendUnique(results, seen, match, limit)
+                if (results.size >= limit) break
+            }
+        }
+    }
+
+    private fun appendLocatedCalleeUsage(
+        results: MutableList<XrefMatch>,
+        seen: MutableSet<String>,
+        caller: JavaMethod,
+        callee: JavaMethod,
+        limit: Int
+    ) {
+        val topUseClass = caller.topParentClass
+        val matches = locateUsePlaces(
+            searchNode = callee,
+            topUseClass = topUseClass,
+            resultClassName = callee.declaringClass.fullName,
+            resultMethodName = callee.name,
+        ).filter { it.sourceMethodName.isBlank() || it.sourceMethodName == caller.name }
+        if (matches.isEmpty()) {
+            appendUnique(
+                results,
+                seen,
+                XrefMatch(
+                    className = callee.declaringClass.fullName,
+                    methodName = callee.name,
+                    line = 0,
+                    sourceClassName = caller.declaringClass.fullName,
+                    sourceMethodName = caller.name,
+                ),
+                limit
+            )
+            return
+        }
+        for (match in matches) {
+            appendUnique(results, seen, match, limit)
+            if (results.size >= limit) break
+        }
+    }
+
+    private fun locateUsePlaces(
+        searchNode: JavaNode,
+        topUseClass: JavaClass,
+        resultClassName: String?,
+        resultMethodName: String?,
+    ): List<XrefMatch> {
+        return try {
+            val codeInfo = topUseClass.codeInfo
+            val code = codeInfo.codeStr
+            val positions = topUseClass.getUsePlacesFor(codeInfo, searchNode)
+            positions.mapNotNull { pos ->
+                val content = CodeUtils.getLineForPos(code, pos).trim()
+                if (content.startsWith("import ")) {
+                    return@mapNotNull null
+                }
+                val enclosingNode = resolveEnclosingNode(codeInfo, pos)
+                val sourceMethodName = (enclosingNode as? JavaMethod)?.name.orEmpty()
+                XrefMatch(
+                    className = resultClassName ?: topUseClass.fullName,
+                    methodName = resultMethodName ?: sourceMethodName,
+                    line = lineNumberForPos(code, pos),
+                    sourceClassName = topUseClass.fullName,
+                    sourceMethodName = sourceMethodName,
+                    content = content,
+                )
+            }
+        } catch (e: Exception) {
+            logger.debug("Failed to locate xref usage for {} in {}", searchNode.fullName, topUseClass.fullName, e)
+            emptyList()
+        }
+    }
+
+    private fun fallbackXrefForUseNode(topUseClass: JavaClass): XrefMatch {
+        return XrefMatch(
+            className = topUseClass.fullName,
+            methodName = "",
+            line = 0,
+            sourceClassName = topUseClass.fullName,
+            sourceMethodName = "",
+            content = "",
+        )
+    }
+
+    private fun appendUnique(results: MutableList<XrefMatch>, seen: MutableSet<String>, match: XrefMatch, limit: Int) {
+        if (results.size >= limit) {
+            return
+        }
+        val key = listOf(match.className, match.methodName, match.line, match.sourceClassName, match.sourceMethodName).joinToString("|")
+        if (seen.add(key)) {
+            results.add(match)
+        }
+    }
+
+    private fun methodWithOverrides(method: JavaMethod): List<JavaMethod> {
+        val related = try { method.overrideRelatedMethods } catch (_: Exception) { emptyList() }
+        return if (related.isEmpty()) listOf(method) else related
+    }
+
+    private fun safeUseIn(node: JavaNode): List<JavaNode> {
+        return try { node.useIn } catch (_: Exception) { emptyList() }
+    }
+
+    private fun resolveEnclosingNode(codeInfo: ICodeInfo, pos: Int): JavaNode? {
+        return try { decompiler.getEnclosingNode(codeInfo, pos) } catch (_: Exception) { null }
+    }
+
+    private fun lineNumberForPos(code: String, pos: Int): Int {
+        val end = pos.coerceIn(0, code.length)
+        var line = 1
+        for (i in 0 until end) {
+            if (code[i] == '\n') {
+                line++
+            }
+        }
+        return line
+    }
+
+    private fun guardFullScanMemory(processedClassCount: Int) {
+        if (processedClassCount == 0 || processedClassCount % FULL_SCAN_UNLOAD_BATCH != 0) {
+            return
+        }
+        unloadClasses()
+        if (isFreeMemoryAvailable()) {
+            return
+        }
+        System.gc()
+        if (!isFreeMemoryAvailable()) {
+            throw IllegalStateException("Full code scan stopped because free heap memory is below the safe threshold")
+        }
+    }
+
+    private fun isFreeMemoryAvailable(): Boolean {
+        val runtime = Runtime.getRuntime()
+        val maxMemory = runtime.maxMemory()
+        val totalFree = runtime.freeMemory() + (maxMemory - runtime.totalMemory())
+        val minFree = (maxMemory * MIN_FREE_MEMORY_RATIO).toLong().coerceAtMost(MAX_MIN_FREE_MEMORY_BYTES)
+        return totalFree > minFree
+    }
 
     private fun findMethod(cls: JavaClass, methodName: String, signature: String?): JavaMethod? {
         val methods = cls.methods
@@ -430,6 +648,9 @@ class DecompiledApk internal constructor(
 
     private companion object {
         const val RESOLVED_CLASS_CACHE_CAPACITY = 128
+        const val FULL_SCAN_UNLOAD_BATCH = 32
+        const val MIN_FREE_MEMORY_RATIO = 0.2
+        const val MAX_MIN_FREE_MEMORY_BYTES = 512L * 1024L * 1024L
     }
 }
 
@@ -547,7 +768,10 @@ data class SearchMatch(
 data class XrefMatch(
     val className: String,
     val methodName: String,
-    val line: Int
+    val line: Int,
+    val sourceClassName: String = "",
+    val sourceMethodName: String = "",
+    val content: String = "",
 )
 
 data class ResourceInfo(

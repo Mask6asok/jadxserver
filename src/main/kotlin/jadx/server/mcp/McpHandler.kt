@@ -40,7 +40,7 @@ class McpHandler(private val state: ServerState) {
 
     fun createServer(): Server {
         val server = Server(
-            Implementation(name = "jadx-server", version = "0.1.4"),
+            Implementation(name = "jadx-server", version = "0.1.6"),
             ServerOptions(
                 capabilities = ServerCapabilities(
                     tools = ServerCapabilities.Tools(listChanged = true)
@@ -176,6 +176,7 @@ class McpHandler(private val state: ServerState) {
                             }
                             state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                             markHeavyAsUnloadEligible(toolName, acquireResult.instance)
+                            unloadHeavyAfterOpen(toolName, acquireResult.instance)
                             result
                         } catch (e: TimeoutCancellationException) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
@@ -236,7 +237,7 @@ class McpHandler(private val state: ServerState) {
                             }
                             state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                             markHeavyAsUnloadEligible(toolName, instance)
-                            markHeavyAsUnloadEligible(toolName, instance)
+                            unloadHeavyAfterOpen(toolName, instance)
                             result
                         } catch (e: TimeoutCancellationException) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
