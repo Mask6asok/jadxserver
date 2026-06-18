@@ -96,7 +96,7 @@ class FileIndex(private val uploadDir: Path? = null) {
      */
     fun enforceMaxEntries() {
         val max = maxEntries ?: return
-        if (entries.size <= max) return
+        if (max < 0 || entries.size <= max) return
         val toRemove = entries.values
             .sortedByDescending { it.storedAt }
             .drop(max)

@@ -44,7 +44,7 @@ fun main(args: Array<String>) {
     var maxPerFile = 4
     var idleTimeout = Duration.ofMinutes(5)
     var cleanupInterval = Duration.ofSeconds(10)
-    var maxCachedApks = 10
+    var maxCachedApks = -1
     var toolTimeout = Duration.ofMinutes(5)
     var jadxVerbose = false
 

@@ -11,7 +11,7 @@ data class ServerConfig(
     val maxPerFile: Int = 4,
     val idleTimeout: Duration = Duration.ofMinutes(5),
     val cleanupInterval: Duration = Duration.ofSeconds(10),
-    val maxCachedApks: Int = 10,
+    val maxCachedApks: Int = -1,  // -1 = no limit
     val uploadDir: Path = Path.of("./uploads"),
     val toolTimeout: Duration = Duration.ofMinutes(5),
     val xrefMode: XrefMode = XrefMode.JADX,
