@@ -131,7 +131,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew shadowJar
 ```
 
-输出：`build/libs/jadx-server-0.1.6-all.jar`（约 25MB）
+输出：`build/libs/jadx-server-0.1.7-all.jar`（约 25MB）
 
 **分发包**（启动脚本 + 独立依赖 JAR）：
 
@@ -146,9 +146,10 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 **通过 fat JAR**：
 
 ```bash
-java -jar build/libs/jadx-server-0.1.6-all.jar
-java -jar build/libs/jadx-server-0.1.6-all.jar --xref-mode jadx
-java -jar build/libs/jadx-server-0.1.6-all.jar --stdio
+java -jar build/libs/jadx-server-0.1.7-all.jar
+java -jar build/libs/jadx-server-0.1.7-all.jar --xref-mode jadx
+java -jar build/libs/jadx-server-0.1.7-all.jar --auth-token 'replace-with-a-strong-token'
+java -jar build/libs/jadx-server-0.1.7-all.jar --stdio
 ```
 
 **通过分发脚本**：
@@ -170,7 +171,7 @@ jadx-server --stdio
   "mcpServers": {
     "jadx-server": {
     "command": "java",
-    "args": ["-jar", "/path/to/jadx-server-0.1.6-all.jar", "--stdio"]
+    "args": ["-jar", "/path/to/jadx-server-0.1.7-all.jar", "--stdio"]
     }
   }
 }
@@ -183,15 +184,28 @@ jadx-server --stdio
 如果服务监听在 `0.0.0.0` 或经由反向代理暴露，建议同时设置 `--public-base-url`，这样 `upload_file` 返回的上传地址会是客户端可访问的真实地址，而不是 `0.0.0.0`。
 
 ```bash
-java -jar jadx-server-0.1.6-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.7-all.jar --listen 127.0.0.1:8080
 ```
+
+如需启用 HTTP 认证，启动时传入 token。未传入或传入空值时保持无需认证模式：
+
+```bash
+java -jar jadx-server-0.1.7-all.jar \
+  --listen 127.0.0.1:8080 \
+  --auth-token 'replace-with-a-strong-token'
+```
+
+也可以通过 `JADX_SERVER_AUTH_TOKEN` 环境变量配置；同时存在时，`--auth-token` 优先。生产环境建议使用环境变量，避免 token 出现在进程参数中。
 
 ```json
 {
   "mcpServers": {
     "jadx-server": {
       "transport": "http",
-      "url": "http://127.0.0.1:8080/mcp"
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer replace-with-a-strong-token"
+      }
     }
   }
 }
@@ -206,7 +220,7 @@ java -jar jadx-server-0.1.6-all.jar --listen 127.0.0.1:8080
   "mcpServers": {
     "jadx-server": {
       "type": "local",
-    "command": ["java", "-jar", "/path/to/jadx-server-0.1.6-all.jar", "--stdio"]
+    "command": ["java", "-jar", "/path/to/jadx-server-0.1.7-all.jar", "--stdio"]
     }
   }
 }
@@ -215,7 +229,7 @@ java -jar jadx-server-0.1.6-all.jar --listen 127.0.0.1:8080
 #### OpenCode（HTTP）
 
 ```bash
-java -jar jadx-server-0.1.6-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-0.1.7-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -223,10 +237,28 @@ java -jar jadx-server-0.1.6-all.jar --listen 127.0.0.1:8080
   "mcp": {
     "jadx-server": {
       "type": "remote",
-      "url": "http://127.0.0.1:8080/mcp"
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer replace-with-a-strong-token"
+      }
     }
   }
 }
+```
+
+#### Codex（HTTP）
+
+Codex 当前支持为流式 HTTP MCP 服务单独绑定 bearer token 环境变量。推荐让服务端和客户端共用同一个 token 值：
+
+```bash
+export JADX_SERVER_AUTH_TOKEN='replace-with-a-strong-token'
+java -jar jadx-server-0.1.7-all.jar \
+  --listen 127.0.0.1:8080 \
+  --auth-token "$JADX_SERVER_AUTH_TOKEN"
+
+codex mcp add jadx-server \
+  --url http://127.0.0.1:8080/mcp \
+  --bearer-token-env-var JADX_SERVER_AUTH_TOKEN
 ```
 
 ### 上传 APK / JAR
@@ -237,6 +269,7 @@ java -jar jadx-server-0.1.6-all.jar --listen 127.0.0.1:8080
 
 ```bash
 curl -X POST http://127.0.0.1:8080/upload \
+  -H 'Authorization: Bearer replace-with-a-strong-token' \
   -F "file=@your-app.apk"
 ```
 
@@ -245,7 +278,7 @@ curl -X POST http://127.0.0.1:8080/upload \
 如果服务端使用 `--listen 0.0.0.0:<port>` 部署到远程主机或反向代理后面，请务必额外配置：
 
 ```bash
-java -jar jadx-server-0.1.6-all.jar \
+java -jar jadx-server-0.1.7-all.jar \
   --listen 0.0.0.0:19090 \
   --public-base-url https://jadx.example.com
 ```
@@ -276,16 +309,18 @@ MCP 客户端连接到 `POST /mcp`，请求头需携带：
 ```
 Accept: application/json, text/event-stream
 Mcp-Session-Id: <session-id>
+Authorization: Bearer <token>  # 仅在服务端配置了 token 时需要
 ```
 
 ## 配置参考
 
-所有选项均可通过 CLI 参数、编程式 `ServerConfig` 或环境变量（未来支持）配置。
+所有选项均可通过 CLI 参数或编程式 `ServerConfig` 配置；认证 token 还支持环境变量。
 
 | 配置字段 | CLI 参数 | 默认值 | 说明 |
 |---|---|---|---|
 | `transport` | `--transport` / `--stdio` | `HTTP` | 传输模式：`HTTP` 或 `STDIO` |
 | `listen` | `--listen` | `127.0.0.1:8080` | HTTP 监听地址 |
+| `authorizationToken` | `--auth-token` / `JADX_SERVER_AUTH_TOKEN` | 未配置 | 配置后要求 `/mcp` 和 `/upload` 携带 Bearer Token |
 | `maxInstances` | `-m` / `--max-instances` | `0`（自动） | 最大引擎实例数；0 = `min(CPU/4, 2)` |
 | `maxPerFile` | `--max-per-file` | `4` | 单个 APK/JAR 文件最大并发实例数 |
 | `idleTimeout` | `--idle-timeout` | `300s`（5 分钟） | 空闲实例驱逐超时 |
@@ -308,6 +343,7 @@ Mcp-Session-Id: <session-id>
 data class ServerConfig(
     val transport: TransportMode = TransportMode.HTTP,
     val listen: String = "127.0.0.1:8080",
+    val authorizationToken: String? = null,
     val maxInstances: Int = 0,
     val maxPerFile: Int = 4,
     val idleTimeout: Duration = Duration.ofMinutes(5),

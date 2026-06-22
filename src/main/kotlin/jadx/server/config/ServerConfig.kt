@@ -7,6 +7,7 @@ data class ServerConfig(
     val transport: TransportMode = TransportMode.HTTP,
     val listen: String = "127.0.0.1:8080",
     val publicBaseUrl: String? = null,
+    val authorizationToken: String? = null,
     val maxInstances: Int = 0,  // 0 = auto (min(CPU/4, 2))
     val maxPerFile: Int = 4,
     val idleTimeout: Duration = Duration.ofMinutes(5),

@@ -60,6 +60,9 @@ object ServerTools {
                 ToolResult.success {
                     put("upload_url", JsonPrimitive("$baseUrl/upload"))
                     put("upload_method", JsonPrimitive("POST"))
+                    if (!state.config.authorizationToken.isNullOrBlank()) {
+                        put("authorization", JsonPrimitive("Send the same Authorization: Bearer <token> header used for MCP requests."))
+                    }
                     put("content_type", JsonPrimitive("multipart/form-data"))
                     put("field_name", JsonPrimitive("file"))
                     put("description", JsonPrimitive("Upload an APK/DEX/JAR file via multipart POST to $baseUrl/upload. Response includes file_hash for subsequent tools."))

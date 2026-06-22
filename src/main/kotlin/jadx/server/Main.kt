@@ -38,6 +38,7 @@ fun main(args: Array<String>) {
     var transportMode = TransportMode.HTTP
     var listenAddr = "127.0.0.1:8080"
     var publicBaseUrl: String? = null
+    var authorizationToken = System.getenv("JADX_SERVER_AUTH_TOKEN")?.takeIf { it.isNotBlank() }
     var maxInst = 0
     var upload = "./uploads"
     var xrefMode = XrefMode.JADX
@@ -55,6 +56,7 @@ fun main(args: Array<String>) {
             "--transport" -> { if (i+1 < args.size && args[i+1] == "stdio") transportMode = TransportMode.STDIO; i++ }
             "--listen" -> { if (i+1 < args.size) listenAddr = args[i+1]; i++ }
             "--public-base-url" -> { if (i+1 < args.size) publicBaseUrl = args[i+1]; i++ }
+            "--auth-token" -> { if (i+1 < args.size) authorizationToken = args[i+1].takeIf { it.isNotBlank() }; i++ }
             "--max-instances", "-m" -> { if (i+1 < args.size) maxInst = args[i+1].toIntOrNull() ?: 0; i++ }
             "--upload-dir" -> { if (i+1 < args.size) upload = args[i+1]; i++ }
             "--xref-mode" -> { if (i+1 < args.size) xrefMode = XrefMode.valueOf(args[i+1].uppercase()); i++ }
@@ -79,6 +81,7 @@ fun main(args: Array<String>) {
         transport = transportMode,
         listen = listenAddr,
         publicBaseUrl = publicBaseUrl,
+        authorizationToken = authorizationToken,
         maxInstances = maxInst,
         maxPerFile = maxPerFile,
         idleTimeout = idleTimeout,
@@ -120,16 +123,11 @@ fun startHttpServer(config: ServerConfig, state: ServerState) {
     val parts = config.listen.split(":")
     val host = parts.getOrElse(0) { "127.0.0.1" }
     val port = parts.getOrNull(1)?.toIntOrNull() ?: 8080
+    logger.info("HTTP bearer authentication is {}", if (config.authorizationToken.isNullOrBlank()) "disabled" else "enabled")
 
     embeddedServer(Netty, host = host, port = port) {
-        install(CORS) {
-            anyHost()
-            allowHeader(HttpHeaders.ContentType)
-            allowHeader("mcp-session-id")
-            allowMethod(HttpMethod.Post)
-            allowMethod(HttpMethod.Get)
-            allowMethod(HttpMethod.Delete)
-        }
+        installHttpCors()
+        installOptionalBearerAuthorization(config.authorizationToken)
         val handler = McpHandler(state)
         val server = handler.createServer()
         this.mcpStreamableHttp { server }
@@ -169,6 +167,18 @@ fun startHttpServer(config: ServerConfig, state: ServerState) {
     }.start(wait = true)
 }
 
+fun Application.installHttpCors() {
+    install(CORS) {
+        anyHost()
+        allowHeader(HttpHeaders.ContentType)
+        allowHeader(HttpHeaders.Authorization)
+        allowHeader("mcp-session-id")
+        allowMethod(HttpMethod.Post)
+        allowMethod(HttpMethod.Get)
+        allowMethod(HttpMethod.Delete)
+    }
+}
+
 fun printHelp() {
     println("""
         jadx-server — MCP server for Android APK decompilation
@@ -180,6 +190,7 @@ fun printHelp() {
           --transport <mode>         Transport mode: http, stdio (default: http)
           --listen <host:port>       HTTP listen address (default: 127.0.0.1:8080)
           --public-base-url <url>    Public base URL used in upload_file responses
+          --auth-token <token>       Require this Bearer token for /mcp and /upload
           --max-instances, -m <n>    Max engine instances, 0=auto(min CPU/4, lower-bounded to 1, upper-bounded to 2)
           --max-per-file <n>         Max concurrent instances per file (default: 4)
           --idle-timeout <s>         Idle engine eviction timeout in seconds (default: 300)

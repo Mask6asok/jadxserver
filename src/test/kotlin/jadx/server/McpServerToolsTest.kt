@@ -1,5 +1,14 @@
 package jadx.server
 
+import io.ktor.client.request.header
+import io.ktor.client.request.options
+import io.ktor.client.request.post
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.post
+import io.ktor.server.routing.routing
+import io.ktor.server.testing.testApplication
 import jadx.server.config.ServerConfig
 import jadx.server.config.TransportMode
 import jadx.server.engine.DecompiledApk
@@ -339,5 +348,82 @@ class McpServerToolsTest {
 
         assertTrue(result is ToolResult.Error)
         assertEquals(-32601, result.code)
+    }
+}
+
+class HttpAuthorizationTest {
+    @Test
+    fun `missing configured token leaves HTTP endpoints unauthenticated`() = testApplication {
+        application {
+            installOptionalBearerAuthorization(null)
+            testRoutes()
+        }
+
+        assertEquals(HttpStatusCode.OK, client.post("/mcp").status)
+        assertEquals(HttpStatusCode.OK, client.post("/upload").status)
+    }
+
+    @Test
+    fun `configured token protects MCP and upload endpoints`() = testApplication {
+        application {
+            installOptionalBearerAuthorization("server-secret")
+            testRoutes()
+        }
+
+        for (path in listOf("/mcp", "/upload")) {
+            val missing = client.post(path)
+            assertEquals(HttpStatusCode.Unauthorized, missing.status)
+            assertEquals("Bearer realm=\"jadx-server\"", missing.headers[HttpHeaders.WWWAuthenticate])
+
+            val wrong = client.post(path) {
+                header(HttpHeaders.Authorization, "Bearer wrong-secret")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, wrong.status)
+
+            val valid = client.post(path) {
+                header(HttpHeaders.Authorization, "Bearer server-secret")
+            }
+            assertEquals(HttpStatusCode.OK, valid.status)
+        }
+    }
+
+    @Test
+    fun `non-bearer authorization is rejected`() = testApplication {
+        application {
+            installOptionalBearerAuthorization("server-secret")
+            testRoutes()
+        }
+
+        val response = client.post("/mcp") {
+            header(HttpHeaders.Authorization, "Basic server-secret")
+        }
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+    }
+
+    @Test
+    fun `CORS preflight allows authorization header without authentication`() = testApplication {
+        application {
+            installHttpCors()
+            installOptionalBearerAuthorization("server-secret")
+            testRoutes()
+        }
+
+        val response = client.options("/mcp") {
+            header(HttpHeaders.Origin, "https://client.example")
+            header(HttpHeaders.AccessControlRequestMethod, "POST")
+            header(HttpHeaders.AccessControlRequestHeaders, "authorization,content-type")
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("*", response.headers[HttpHeaders.AccessControlAllowOrigin])
+        val allowedHeaders = response.headers[HttpHeaders.AccessControlAllowHeaders].orEmpty().lowercase()
+        assertTrue(allowedHeaders.contains("authorization"))
+    }
+
+    private fun io.ktor.server.application.Application.testRoutes() {
+        routing {
+            post("/mcp") { call.respondText("ok") }
+            post("/upload") { call.respondText("ok") }
+        }
     }
 }
