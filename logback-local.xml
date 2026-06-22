@@ -1,0 +1,18 @@
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="jadx.server" level="INFO"/>
+    <logger name="jadx.server.engine.DecompiledApk" level="INFO"/>
+    <logger name="io.modelcontextprotocol" level="INFO"/>
+    <logger name="io.ktor" level="INFO"/>
+    <logger name="jadx" level="OFF"/>
+    <logger name="FeatureRegistry[Tool]" level="WARN"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

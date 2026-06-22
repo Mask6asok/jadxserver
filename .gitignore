@@ -14,3 +14,6 @@ build.sh
 server.log
 backup
 test
+oom.hprof
+run.sh
+AGENTS.md
