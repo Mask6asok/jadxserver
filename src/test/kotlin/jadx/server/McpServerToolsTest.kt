@@ -10,7 +10,6 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import jadx.server.config.ServerConfig
-import jadx.server.config.TransportMode
 import jadx.server.engine.DecompiledApk
 import jadx.server.engine.EngineOptions
 import jadx.server.mcp.ToolResult
@@ -44,7 +43,7 @@ class McpServerToolsTest {
         tempDir = Files.createTempDirectory("jadx-test-server-tools")
         val config = ServerConfig(uploadDir = tempDir)
         state = ServerState(config)
-        registry = ToolRegistry.build(state, TransportMode.STDIO)
+        registry = ToolRegistry.build(state)
 
         // Single deterministic fixture
         val apkFile = Path.of(System.getProperty("user.dir"))
@@ -67,8 +66,7 @@ class McpServerToolsTest {
 
         assertTrue(result is ToolResult.Success)
         val data = result.data
-        // STDIO mode returns mode + target_dir; HTTP mode returns upload_url
-        assertTrue(data.containsKey("mode") || data.containsKey("upload_url"))
+        assertTrue(data.containsKey("upload_url"))
         assertTrue(data.containsKey("description"))
     }
 
@@ -364,27 +362,27 @@ class HttpAuthorizationTest {
     }
 
     @Test
-    fun `configured token protects MCP and upload endpoints`() = testApplication {
+    fun `configured token protects only MCP endpoint`() = testApplication {
         application {
             installOptionalBearerAuthorization("server-secret")
             testRoutes()
         }
 
-        for (path in listOf("/mcp", "/upload")) {
-            val missing = client.post(path)
-            assertEquals(HttpStatusCode.Unauthorized, missing.status)
-            assertEquals("Bearer realm=\"jadx-server\"", missing.headers[HttpHeaders.WWWAuthenticate])
+        val missing = client.post("/mcp")
+        assertEquals(HttpStatusCode.Unauthorized, missing.status)
+        assertEquals("Bearer realm=\"jadx-server\"", missing.headers[HttpHeaders.WWWAuthenticate])
 
-            val wrong = client.post(path) {
-                header(HttpHeaders.Authorization, "Bearer wrong-secret")
-            }
-            assertEquals(HttpStatusCode.Unauthorized, wrong.status)
-
-            val valid = client.post(path) {
-                header(HttpHeaders.Authorization, "Bearer server-secret")
-            }
-            assertEquals(HttpStatusCode.OK, valid.status)
+        val wrong = client.post("/mcp") {
+            header(HttpHeaders.Authorization, "Bearer wrong-secret")
         }
+        assertEquals(HttpStatusCode.Unauthorized, wrong.status)
+
+        val valid = client.post("/mcp") {
+            header(HttpHeaders.Authorization, "Bearer server-secret")
+        }
+        assertEquals(HttpStatusCode.OK, valid.status)
+
+        assertEquals(HttpStatusCode.OK, client.post("/upload").status)
     }
 
     @Test

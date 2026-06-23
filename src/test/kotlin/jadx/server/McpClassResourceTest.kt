@@ -1,7 +1,6 @@
 package jadx.server
 
 import jadx.server.config.ServerConfig
-import jadx.server.config.TransportMode
 import jadx.server.engine.DecompiledApk
 import jadx.server.engine.EngineOptions
 import jadx.server.mcp.ToolResult
@@ -31,7 +30,7 @@ class McpClassResourceTest {
         tempDir = Files.createTempDirectory("jadx-test-class-resource")
         val config = ServerConfig(uploadDir = tempDir)
         state = ServerState(config)
-        registry = ToolRegistry.build(state, TransportMode.STDIO)
+        registry = ToolRegistry.build(state)
 
         val apkFile = Path.of(System.getProperty("user.dir"))
             .resolve("test/apps/com.huawei.hwread.dz.apk")

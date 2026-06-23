@@ -4,7 +4,6 @@ import java.nio.file.Path
 import java.time.Duration
 
 data class ServerConfig(
-    val transport: TransportMode = TransportMode.HTTP,
     val listen: String = "127.0.0.1:8080",
     val publicBaseUrl: String? = null,
     val authorizationToken: String? = null,
@@ -17,7 +16,5 @@ data class ServerConfig(
     val toolTimeout: Duration = Duration.ofMinutes(5),
     val xrefMode: XrefMode = XrefMode.JADX,
 )
-
-enum class TransportMode { HTTP, STDIO }
 
 enum class XrefMode { TEXT, JADX }

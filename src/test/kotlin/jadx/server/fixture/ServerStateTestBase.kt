@@ -1,7 +1,6 @@
 package jadx.server.fixture
 
 import jadx.server.config.ServerConfig
-import jadx.server.config.TransportMode
 import jadx.server.server.ServerState
 import jadx.server.tools.ToolRegistry
 import kotlin.test.AfterTest
@@ -31,7 +30,7 @@ abstract class ServerStateTestBase {
         tempDir = Files.createTempDirectory("jadx-test-server-state")
         val config = ServerConfig(uploadDir = tempDir)
         state = ServerState(config)
-        registry = ToolRegistry.build(state, TransportMode.STDIO)
+        registry = ToolRegistry.build(state)
     }
 
     @AfterTest

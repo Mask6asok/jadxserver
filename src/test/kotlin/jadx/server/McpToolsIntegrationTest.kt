@@ -1,7 +1,6 @@
 package jadx.server
 
 import jadx.server.config.ServerConfig
-import jadx.server.config.TransportMode
 import jadx.server.engine.DecompiledApk
 import jadx.server.engine.EngineOptions
 import jadx.server.mcp.ToolResult
@@ -35,7 +34,7 @@ class McpToolsIntegrationTest {
         tempDir = Files.createTempDirectory("jadx-test-mcp")
         val config = ServerConfig(uploadDir = tempDir)
         state = ServerState(config)
-        registry = ToolRegistry.build(state, TransportMode.STDIO)
+        registry = ToolRegistry.build(state)
 
         // Single deterministic fixture — no fallback candidates
         val apkFile = Path.of(System.getProperty("user.dir"))

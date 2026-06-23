@@ -1,6 +1,5 @@
 package jadx.server.tools
 
-import jadx.server.config.TransportMode
 import jadx.server.engine.DecompiledApk
 import jadx.server.mcp.McpToolDef
 import jadx.server.mcp.ToolResult
@@ -107,7 +106,7 @@ class ToolRegistry private constructor(
             HEAVY,
         }
 
-        fun build(state: ServerState, transport: TransportMode): ToolRegistry {
+        fun build(state: ServerState): ToolRegistry {
             val serverHandlers = linkedMapOf<String, ServerToolHandler>()
             val analysisHandlers = linkedMapOf<String, AnalysisToolHandler>()
             val analysisWeights = linkedMapOf<String, ToolWeight>()
@@ -116,9 +115,6 @@ class ToolRegistry private constructor(
             // ── Server tools ──
             for (def in ServerTools.definitions()) defs += def
             serverHandlers["upload_file"] = ServerToolHandler(ServerTools::uploadFile)
-            if (transport == TransportMode.STDIO) {
-                serverHandlers["register_file"] = ServerToolHandler(ServerTools::registerFile)
-            }
             serverHandlers["save_project"] = ServerToolHandler(ServerTools::saveProject)
             serverHandlers["list_files"] = ServerToolHandler(ServerTools::listFiles)
             serverHandlers["list_instances"] = ServerToolHandler(ServerTools::listInstances)

@@ -7,7 +7,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ## 特性
 
 - **纯 Kotlin/JVM** — 单进程架构，jadx-core 进程内嵌入，零 IPC 开销
-- **双传输模式** — 开箱支持 stdio 和 Streamable HTTP（Ktor 后端）
+- **Streamable HTTP** — 基于 Ktor 提供 MCP HTTP 服务和文件上传接口
 - **MCP 工具集** — 提供服务端管理工具与分析工具，覆盖 APK 全链路探索
 - **实例池化** — 可配置的引擎池，支持并发反编译任务，带 acquire/release/evict 生命周期
 - **会话管理** — 按客户端会话追踪，优先复用会话内实例；同一 `file_hash` 的空闲实例也可跨会话接管
@@ -48,7 +48,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 
 | 模块 | 关键文件 | 职责 |
 |------|---------|------|
-| `config` | `ServerConfig.kt` | CLI 参数、传输模式、池大小、超时 |
+| `config` | `ServerConfig.kt` | CLI 参数、池大小、超时 |
 | `mcp` | `McpHandler.kt`、`McpToolDef.kt`、`McpResult.kt` | MCP 协议接线、工具 Schema 生成、结果格式化 |
 | `server` | `EnginePool.kt`、`FileIndex.kt`、`SessionManager.kt`、`TaskManager.kt`、`IdleEvictor.kt`、`ServerState.kt` | 实例生命周期、文件追踪、会话亲和、后台任务、驱逐 |
 | `engine` | `DecompilerEngine.kt`、`JadxEngine.kt`、`DecompiledApk.kt`、`MockEngine.kt` | 反编译器抽象、jadx 集成、零拷贝数据访问 |
@@ -62,7 +62,6 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 | 工具 | 说明 |
 |------|------|
 | `upload_file` | 获取上传 URL 和上传说明 |
-| `register_file` | 注册已拷贝到上传目录的文件（仅 stdio 模式可用，HTTP 不暴露） |
 | `save_project` | 为指定文件生成/刷新 upstream 兼容的 `project.jadx` |
 | `list_files` | 列出已知二进制文件（已上传或之前打开过），支持过滤 |
 | `list_instances` | 列出池中所有活跃引擎实例 |
@@ -149,7 +148,6 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 java -jar build/libs/jadx-server-0.1.7-all.jar
 java -jar build/libs/jadx-server-0.1.7-all.jar --xref-mode jadx
 java -jar build/libs/jadx-server-0.1.7-all.jar --auth-token 'replace-with-a-strong-token'
-java -jar build/libs/jadx-server-0.1.7-all.jar --stdio
 ```
 
 **通过分发脚本**：
@@ -157,25 +155,9 @@ java -jar build/libs/jadx-server-0.1.7-all.jar --stdio
 ```bash
 jadx-server
 jadx-server --xref-mode jadx
-jadx-server --stdio
 ```
 
 ### MCP 客户端配置
-
-#### Claude Code（stdio）
-
-添加到 `~/.claude.json`：
-
-```json
-{
-  "mcpServers": {
-    "jadx-server": {
-    "command": "java",
-    "args": ["-jar", "/path/to/jadx-server-0.1.7-all.jar", "--stdio"]
-    }
-  }
-}
-```
 
 #### Claude Code（HTTP）
 
@@ -206,21 +188,6 @@ java -jar jadx-server-0.1.7-all.jar \
       "headers": {
         "Authorization": "Bearer replace-with-a-strong-token"
       }
-    }
-  }
-}
-```
-
-#### OpenCode（stdio）
-
-编辑 `~/.config/opencode/opencode.json`：
-
-```json
-{
-  "mcpServers": {
-    "jadx-server": {
-      "type": "local",
-    "command": ["java", "-jar", "/path/to/jadx-server-0.1.7-all.jar", "--stdio"]
     }
   }
 }
@@ -269,7 +236,6 @@ codex mcp add jadx-server \
 
 ```bash
 curl -X POST http://127.0.0.1:8080/upload \
-  -H 'Authorization: Bearer replace-with-a-strong-token' \
   -F "file=@your-app.apk"
 ```
 
@@ -293,15 +259,6 @@ https://jadx.example.com/upload
 
 如需持久化为 upstream 风格项目，可额外调用 `save_project(file_hash=...)`，服务端会在 `uploads/binary/<md5>/project.jadx` 生成项目文件，并将缓存目录固定为同目录下的 `project.cache/`。
 
-#### STDIO 模式
-
-> 说明：stdio 模式目前未经过充分测试，优先建议使用 HTTP 模式。
-
-1. 调用 `upload_file`，服务端返回 `target_dir`（上传目录的绝对路径）
-2. 将 APK/JAR 文件拷贝到该目录
-3. 调用 `register_file(file_path="/绝对路径/your-app.apk")`，服务端计算 MD5、建立索引
-4. 用返回的 `file_hash` 调用分析工具
-
 ### MCP 连接（HTTP）
 
 MCP 客户端连接到 `POST /mcp`，请求头需携带：
@@ -318,9 +275,8 @@ Authorization: Bearer <token>  # 仅在服务端配置了 token 时需要
 
 | 配置字段 | CLI 参数 | 默认值 | 说明 |
 |---|---|---|---|
-| `transport` | `--transport` / `--stdio` | `HTTP` | 传输模式：`HTTP` 或 `STDIO` |
 | `listen` | `--listen` | `127.0.0.1:8080` | HTTP 监听地址 |
-| `authorizationToken` | `--auth-token` / `JADX_SERVER_AUTH_TOKEN` | 未配置 | 配置后要求 `/mcp` 和 `/upload` 携带 Bearer Token |
+| `authorizationToken` | `--auth-token` / `JADX_SERVER_AUTH_TOKEN` | 未配置 | 配置后要求 `/mcp` 携带 Bearer Token；`/upload` 不认证 |
 | `maxInstances` | `-m` / `--max-instances` | `0`（自动） | 最大引擎实例数；0 = `min(CPU/4, 2)` |
 | `maxPerFile` | `--max-per-file` | `4` | 单个 APK/JAR 文件最大并发实例数 |
 | `idleTimeout` | `--idle-timeout` | `300s`（5 分钟） | 空闲实例驱逐超时 |
@@ -341,7 +297,6 @@ Authorization: Bearer <token>  # 仅在服务端配置了 token 时需要
 
 ```kotlin
 data class ServerConfig(
-    val transport: TransportMode = TransportMode.HTTP,
     val listen: String = "127.0.0.1:8080",
     val authorizationToken: String? = null,
     val maxInstances: Int = 0,
@@ -357,7 +312,7 @@ data class ServerConfig(
 
 ## 工作原理
 
-1. **上传** — 客户端通过 `POST /upload`（HTTP）或 `upload_file` → `register_file`（STDIO）上传 APK/JAR。服务端计算 MD5 哈希并建立索引。
+1. **上传** — 客户端调用 `upload_file` 获取地址，再通过 `POST /upload` 上传 APK/JAR。服务端计算 MD5 哈希并建立索引。
 
 2. **项目保存** — 可调用 `save_project(file_hash=...)` 在 `uploads/binary/<md5>/project.jadx` 生成 upstream 兼容的项目文件；其 `cacheDir` 固定指向同目录下的 `project.cache/`。
 
@@ -383,7 +338,7 @@ data class ServerConfig(
 
 ```
 src/main/kotlin/jadx/server/
-├── config/          # ServerConfig, TransportMode
+├── config/          # ServerConfig, XrefMode
 ├── mcp/             # MCP handler, tool definitions, result types
 ├── server/          # Engine pool, file index, session/task managers, eviction
 ├── engine/          # DecompilerEngine interface, JadxEngine, DecompiledApk, MockEngine

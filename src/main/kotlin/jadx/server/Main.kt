@@ -11,18 +11,12 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
-import io.modelcontextprotocol.kotlin.sdk.server.StdioServerTransport
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import jadx.server.config.ServerConfig
-import jadx.server.config.TransportMode
 import jadx.server.config.XrefMode
 import jadx.server.mcp.McpHandler
 import jadx.server.server.ServerState
-import kotlinx.coroutines.runBlocking
-import kotlinx.io.asSource
-import kotlinx.io.asSink
-import kotlinx.io.buffered
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -35,7 +29,6 @@ import java.nio.file.StandardCopyOption
 import java.time.Duration
 
 fun main(args: Array<String>) {
-    var transportMode = TransportMode.HTTP
     var listenAddr = "127.0.0.1:8080"
     var publicBaseUrl: String? = null
     var authorizationToken = System.getenv("JADX_SERVER_AUTH_TOKEN")?.takeIf { it.isNotBlank() }
@@ -52,8 +45,6 @@ fun main(args: Array<String>) {
     var i = 0
     while (i < args.size) {
         when (args[i]) {
-            "--stdio" -> transportMode = TransportMode.STDIO
-            "--transport" -> { if (i+1 < args.size && args[i+1] == "stdio") transportMode = TransportMode.STDIO; i++ }
             "--listen" -> { if (i+1 < args.size) listenAddr = args[i+1]; i++ }
             "--public-base-url" -> { if (i+1 < args.size) publicBaseUrl = args[i+1]; i++ }
             "--auth-token" -> { if (i+1 < args.size) authorizationToken = args[i+1].takeIf { it.isNotBlank() }; i++ }
@@ -78,7 +69,6 @@ fun main(args: Array<String>) {
     }
 
     val config = ServerConfig(
-        transport = transportMode,
         listen = listenAddr,
         publicBaseUrl = publicBaseUrl,
         authorizationToken = authorizationToken,
@@ -92,28 +82,13 @@ fun main(args: Array<String>) {
         xrefMode = xrefMode,
     )
     val state = ServerState(config)
-    val handler = McpHandler(state)
-    val server = handler.createServer()
 
     Runtime.getRuntime().addShutdownHook(Thread {
         LoggerFactory.getLogger("jadx.server").info("Shutting down...")
-        runBlocking { server.close() }
         state.shutdown()
     })
 
-    when (config.transport) {
-        TransportMode.STDIO -> {
-            val transport = StdioServerTransport(
-                System.`in`.asSource().buffered(),
-                System.out.asSink().buffered()
-            )
-            runBlocking {
-                server.createSession(transport)
-                transport.start()
-            }
-        }
-        TransportMode.HTTP -> startHttpServer(config, state)
-    }
+    startHttpServer(config, state)
 }
 
 private const val MAX_UPLOAD_BYTES = 500L * 1024 * 1024 // 500MB
@@ -123,7 +98,7 @@ fun startHttpServer(config: ServerConfig, state: ServerState) {
     val parts = config.listen.split(":")
     val host = parts.getOrElse(0) { "127.0.0.1" }
     val port = parts.getOrNull(1)?.toIntOrNull() ?: 8080
-    logger.info("HTTP bearer authentication is {}", if (config.authorizationToken.isNullOrBlank()) "disabled" else "enabled")
+    logger.info("MCP bearer authentication is {}", if (config.authorizationToken.isNullOrBlank()) "disabled" else "enabled")
 
     embeddedServer(Netty, host = host, port = port) {
         installHttpCors()
@@ -186,11 +161,9 @@ fun printHelp() {
         Usage: jadx-server [options]
 
         Options:
-          --stdio                    Use stdio transport (default: HTTP)
-          --transport <mode>         Transport mode: http, stdio (default: http)
           --listen <host:port>       HTTP listen address (default: 127.0.0.1:8080)
           --public-base-url <url>    Public base URL used in upload_file responses
-          --auth-token <token>       Require this Bearer token for /mcp and /upload
+          --auth-token <token>       Require this Bearer token for /mcp
           --max-instances, -m <n>    Max engine instances, 0=auto(min CPU/4, lower-bounded to 1, upper-bounded to 2)
           --max-per-file <n>         Max concurrent instances per file (default: 4)
           --idle-timeout <s>         Idle engine eviction timeout in seconds (default: 300)
@@ -206,6 +179,5 @@ fun printHelp() {
           jadx-server                                          # default HTTP on :8080
           jadx-server --xref-mode jadx                         # precise bytecode xref
           jadx-server --listen 0.0.0.0:9090 --max-instances 4  # public, 4 workers
-          jadx-server --stdio                                  # MCP stdio mode
     """.trimIndent())
 }

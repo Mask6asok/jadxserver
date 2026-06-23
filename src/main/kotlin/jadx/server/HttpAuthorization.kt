@@ -13,11 +13,11 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 private const val BEARER_REALM = "jadx-server"
-private val PROTECTED_HTTP_PATHS = setOf("/mcp", "/upload")
+private const val PROTECTED_HTTP_PATH = "/mcp"
 private val BEARER_HEADER = Regex("^Bearer[\\t ]+([^\\s]+)$", RegexOption.IGNORE_CASE)
 
 /**
- * Protects the HTTP MCP and binary upload endpoints when a token is configured.
+ * Protects the HTTP MCP endpoint when a token is configured.
  * An absent or blank configured token intentionally preserves unauthenticated mode.
  */
 fun Application.installOptionalBearerAuthorization(configuredToken: String?) {
@@ -26,7 +26,7 @@ fun Application.installOptionalBearerAuthorization(configuredToken: String?) {
 
     intercept(ApplicationCallPipeline.Plugins) {
         val path = call.request.path()
-        val isProtected = PROTECTED_HTTP_PATHS.any { path == it || path.startsWith("$it/") }
+        val isProtected = path == PROTECTED_HTTP_PATH || path.startsWith("$PROTECTED_HTTP_PATH/")
         if (!isProtected || call.request.local.method == HttpMethod.Options) {
             return@intercept
         }

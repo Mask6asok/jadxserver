@@ -18,7 +18,6 @@ import jadx.server.server.FileStatus
 import jadx.server.server.MemoryDecision
 import jadx.server.server.MemoryDecisionType
 import jadx.server.server.ServerState
-import jadx.server.config.TransportMode
 import jadx.server.tools.CoreTools
 import jadx.server.project.JadxProjectService
 import jadx.server.tools.ToolRegistry
@@ -35,7 +34,7 @@ import java.util.Comparator
 
 class McpHandler(private val state: ServerState) {
     private val logger = LoggerFactory.getLogger(McpHandler::class.java)
-    private val toolRegistry = ToolRegistry.build(state, state.config.transport)
+    private val toolRegistry = ToolRegistry.build(state)
     private val projectService = JadxProjectService()
 
     fun createServer(): Server {
