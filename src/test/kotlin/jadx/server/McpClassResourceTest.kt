@@ -33,7 +33,7 @@ class McpClassResourceTest {
         registry = ToolRegistry.build(state)
 
         val apkFile = Path.of(System.getProperty("user.dir"))
-            .resolve("test/apps/com.huawei.hwread.dz.apk")
+            .resolve("test/apps/com.huawei.notepad.apk")
         assertTrue(Files.exists(apkFile), "No test APK found at: $apkFile")
 
         val entry = state.fileIndex.add(apkFile, tempDir)
@@ -276,7 +276,7 @@ class McpClassResourceTest {
     }
 
     @Test
-    fun testGetMethodCode() = withApk { apk ->
+    fun testGetMethodCodeFallsBackToSmali() = withApk { apk ->
         val firstClass = apk.listClasses(offset = 0, count = 200).firstOrNull { it.methodCount > 0 }
         assertNotNull(firstClass, "No class with methods found")
         val firstMethod = apk.listMethods(firstClass.name)?.firstOrNull()
@@ -292,6 +292,34 @@ class McpClassResourceTest {
         val source = (data["source"] as? JsonPrimitive)?.content
         assertNotNull(source)
         assertTrue(source.isNotEmpty(), "Method source code must not be empty")
+        assertEquals("smali", data["format"]?.jsonPrimitive?.content)
+        assertEquals(true, data["fallback"]?.jsonPrimitive?.boolean)
+        assertTrue(source.lineSequence().first().trim().startsWith(".method "))
+        assertEquals(".end method", source.lineSequence().last().trim())
+        assertEquals(1, source.lineSequence().count { it.trim().startsWith(".method ") })
+    }
+
+    @Test
+    fun testGetSmaliMethod() = withApk { apk ->
+        val target = apk.listClasses(offset = 0, count = 200).asSequence()
+            .mapNotNull { cls -> apk.listMethods(cls.name)?.firstOrNull()?.let { cls.name to it } }
+            .firstOrNull()
+        assertNotNull(target, "No class with methods found")
+        val (className, method) = target
+
+        val result = registry.executeAnalysis("get_smali", apk, buildJsonObject {
+            put("class_name", JsonPrimitive(className))
+            put("method_name", JsonPrimitive(method.name))
+            put("signature", JsonPrimitive(method.signature))
+        })
+        assertTrue(result is ToolResult.Success)
+        assertEquals("smali", result.data["format"]?.jsonPrimitive?.content)
+
+        val source = result.data["source"]?.jsonPrimitive?.content
+        assertNotNull(source)
+        assertTrue(source.lineSequence().first().trim().startsWith(".method "))
+        assertEquals(".end method", source.lineSequence().last().trim())
+        assertEquals(1, source.lineSequence().count { it.trim().startsWith(".method ") })
     }
 
     @Test
@@ -417,5 +445,47 @@ class McpClassResourceTest {
         assertTrue(result is ToolResult.Error)
         assertEquals(-32602, result.code)
         assertTrue(result.message.contains("path", ignoreCase = true))
+    }
+
+    @Test
+    fun testSearchResourceIncludesManifestAndArscXml() = withApk { apk ->
+        val manifestResult = registry.executeAnalysis("search_resource", apk, buildJsonObject {
+            put("query", JsonPrimitive("<manifest"))
+        })
+        assertTrue(manifestResult is ToolResult.Success)
+        val manifestMatches = manifestResult.data["matches"] as? JsonArray
+        assertNotNull(manifestMatches)
+        assertTrue(manifestMatches.any { match ->
+            val path = (match as JsonObject)["path"]?.jsonPrimitive?.content
+            path?.endsWith("AndroidManifest.xml", ignoreCase = true) == true
+        })
+
+        val arscResult = registry.executeAnalysis("search_resource", apk, buildJsonObject {
+            put("query", JsonPrimitive("<resources(?:\\s|>)"))
+            put("regex", JsonPrimitive(true))
+            put("limit", JsonPrimitive(500))
+        })
+        assertTrue(arscResult is ToolResult.Success)
+        val arscMatches = arscResult.data["matches"] as? JsonArray
+        assertNotNull(arscMatches)
+        val generatedXmlPath = arscMatches.asSequence()
+            .map { (it as JsonObject)["path"]!!.jsonPrimitive.content }
+            .firstOrNull { it.startsWith("res/") && it.endsWith(".xml") }
+        assertNotNull(generatedXmlPath, "Expected XML generated from resources.arsc")
+
+        val getResult = registry.executeAnalysis("get_resource", apk, buildJsonObject {
+            put("path", JsonPrimitive("/$generatedXmlPath"))
+        })
+        assertTrue(getResult is ToolResult.Success, "Generated ARSC XML path should be readable")
+    }
+
+    @Test
+    fun testSearchResourceRejectsInvalidRegex() = withApk { apk ->
+        val result = registry.executeAnalysis("search_resource", apk, buildJsonObject {
+            put("query", JsonPrimitive("["))
+            put("regex", JsonPrimitive(true))
+        })
+        assertTrue(result is ToolResult.Error)
+        assertEquals(-32602, result.code)
     }
 }

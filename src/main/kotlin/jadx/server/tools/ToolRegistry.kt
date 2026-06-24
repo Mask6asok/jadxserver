@@ -7,6 +7,8 @@ import jadx.server.server.ServerState
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 
 /**
@@ -39,15 +41,43 @@ class ToolRegistry private constructor(
     fun executeAnalysis(name: String, apk: DecompiledApk, args: JsonObject): ToolResult {
         val handler = analysisTools[name]
             ?: return ToolResult.error(-32601, "Unknown analysis tool: $name")
+        val normalizedArgs = normalizeMisplacedDescription(name, args)
+        if (normalizedArgs !== args) {
+            logger.warn("[ANALYSIS] Corrected mislabeled tool argument for {}: {} -> {}", name, compactArgs(args), compactArgs(normalizedArgs))
+        }
         val start = System.currentTimeMillis()
         val result = try {
-            handler.handle(apk, args)
+            handler.handle(apk, normalizedArgs)
         } catch (e: Exception) {
-            logger.warn("[ANALYSIS] {} {}ms args={} -> ERROR: {}", name, System.currentTimeMillis() - start, compactArgs(args), e.message)
+            logger.warn("[ANALYSIS] {} {}ms args={} -> ERROR: {}", name, System.currentTimeMillis() - start, compactArgs(normalizedArgs), e.message)
             ToolResult.internal("Tool execution error in $name: ${e.message}")
         }
-        logger.info("[ANALYSIS] {} {}ms args={} -> {}", name, System.currentTimeMillis() - start, compactArgs(args), compactResult(result, args))
+        logger.info("[ANALYSIS] {} {}ms args={} -> {}", name, System.currentTimeMillis() - start, compactArgs(normalizedArgs), compactResult(result, normalizedArgs))
         return result
+    }
+
+    /** Repair the unambiguous `<required parameter>: <value>` client serialization mistake. */
+    private fun normalizeMisplacedDescription(name: String, args: JsonObject): JsonObject {
+        val definition = definitionFor(name) ?: return args
+        val missingRequired = definition.params.filter { it.required && it.name !in args }
+        if (missingRequired.size != 1 || "description" !in args) return args
+
+        val description = args["description"] as? JsonPrimitive ?: return args
+        if (!description.isString) return args
+        val separator = description.content.indexOf(':')
+        if (separator < 1) return args
+
+        val label = description.content.substring(0, separator).trim()
+        val value = description.content.substring(separator + 1).trim()
+        val parameter = missingRequired.single()
+        if (!label.equals(parameter.name, ignoreCase = true) || value.isEmpty()) return args
+
+        return buildJsonObject {
+            for ((key, element) in args) {
+                if (key != "description") put(key, element)
+            }
+            put(parameter.name, JsonPrimitive(value))
+        }
     }
 
     fun executeServer(name: String, args: JsonObject, sessionId: String, state: ServerState): ToolResult {
@@ -154,6 +184,7 @@ class ToolRegistry private constructor(
 
             regAnalysis(ToolWeight.LIGHT, MethodTools.definitions(),
                 "get_method_code" to AnalysisToolHandler(MethodTools::getMethodCode),
+                "get_smali" to AnalysisToolHandler(MethodTools::getSmali),
                 "list_methods" to AnalysisToolHandler(MethodTools::listMethods),
             )
 
@@ -169,7 +200,10 @@ class ToolRegistry private constructor(
                 "get_manifest" to AnalysisToolHandler(ResourceTools::getManifest),
                 "get_resource" to AnalysisToolHandler(ResourceTools::getResource),
                 "list_resources" to AnalysisToolHandler(ResourceTools::listResources),
+                "search_resource" to AnalysisToolHandler(ResourceTools::searchResource),
             )
+
+            analysisWeights["search_resource"] = ToolWeight.HEAVY
 
             regAnalysis(ToolWeight.HEAVY, XrefTools.definitions(),
                 "class_xrefs" to AnalysisToolHandler(XrefTools::classXrefs),

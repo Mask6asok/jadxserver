@@ -18,7 +18,7 @@ object SearchTools {
             .param("pattern", "string", "Search pattern (regex supported)", true)
             .param("limit", "number", "Maximum results (default: 100, max: 1000)", false),
         McpToolDef("search_string", "Search string constants in the APK")
-            .param("query", "string", "String content to find", true)
+            .param("query", "string", "String content or regex pattern to find", true)
             .param("limit", "number", "Maximum results (default: 100, max: 5000)", false)
             .param("case_sensitive", "boolean", "Case-sensitive matching (default: false)", false),
         McpToolDef("find_class", "Find classes by name fragment or pattern")

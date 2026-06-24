@@ -109,6 +109,16 @@ class DecompiledApk internal constructor(
         return method.codeStr
     }
 
+    fun getSmali(className: String, methodName: String? = null, signature: String? = null): String? {
+        touch()
+        val cls = resolveClass(className) ?: return null
+        val smali = cls.smali
+        if (methodName == null) return smali
+
+        val method = findMethod(cls, methodName, signature) ?: return null
+        return extractSmaliMethod(smali, method.methodNode.methodInfo.shortId)
+    }
+
     fun listMethods(className: String): List<MethodInfo>? {
         touch()
         val cls = resolveClass(className) ?: return null
@@ -117,6 +127,7 @@ class DecompiledApk internal constructor(
 
     fun searchCode(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
+        val regex = query.toRegexOrNull()
         return runFullCodeScan {
             val results = mutableListOf<SearchMatch>()
             for ((processed, className) in classNames().withIndex()) {
@@ -125,7 +136,7 @@ class DecompiledApk internal constructor(
                 val code = getClassCode(className) ?: continue
                 for ((index, line) in code.lineSequence().withIndex()) {
                     if (results.size >= limit) break
-                    if (line.contains(query, ignoreCase = true)) {
+                    if (matchesSearchQuery(line, query, regex)) {
                         results.add(SearchMatch(className, index + 1, line.trim()))
                     }
                 }
@@ -136,8 +147,9 @@ class DecompiledApk internal constructor(
 
     fun searchString(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
+        val regex = query.toRegexOrNull()
         return runFullCodeScan {
-            val pattern = Regex("\"[^\"]*${Regex.escape(query)}[^\"]*\"")
+            val literalPattern = Regex("\"([^\"]*)\"")
             val results = mutableListOf<SearchMatch>()
             for ((processed, className) in classNames().withIndex()) {
                 if (results.size >= limit) break
@@ -145,7 +157,7 @@ class DecompiledApk internal constructor(
                 val code = getClassCode(className) ?: continue
                 for ((index, line) in code.lineSequence().withIndex()) {
                     if (results.size >= limit) break
-                    if (pattern.containsMatchIn(line)) {
+                    if (matchesStringLiteralQuery(line, query, regex, literalPattern)) {
                         results.add(SearchMatch(className, index + 1, line.trim()))
                     }
                 }
@@ -280,15 +292,47 @@ class DecompiledApk internal constructor(
 
     fun getResource(path: String): String? {
         touch()
+        val normalizedPath = path.removePrefix("/")
         val res = resources.find {
-            it.originalName == path || it.deobfName == path
-        } ?: return null
-        return extractResourceText(res)
+            it.originalName.removePrefix("/") == normalizedPath || it.deobfName.removePrefix("/") == normalizedPath
+        }
+        if (res != null) return extractResourceText(res)
+
+        for (resource in resources) {
+            if (resource.type != ResourceType.ARSC) continue
+            val container = try { resource.loadContent() } catch (_: Exception) { null } ?: continue
+            findContainerText(container, normalizedPath)?.let { return it }
+        }
+        return null
     }
 
     fun listResources(): List<ResourceInfo> {
         touch()
         return resources.map { ResourceInfo(it.originalName, it.type.name, it.originalName) }
+    }
+
+    fun searchResources(
+        query: String,
+        limit: Int = 100,
+        regex: Regex? = null,
+        caseSensitive: Boolean = false
+    ): List<ResourceSearchMatch> {
+        touch()
+        val results = mutableListOf<ResourceSearchMatch>()
+        for (resource in resources) {
+            if (results.size >= limit) break
+            val container = try { resource.loadContent() } catch (_: Exception) { null } ?: continue
+            searchResourceContainer(
+                container = container,
+                resourceType = resource.type.name,
+                query = query,
+                regex = regex,
+                caseSensitive = caseSensitive,
+                limit = limit,
+                results = results
+            )
+        }
+        return results
     }
 
     fun resolveClass(className: String): JavaClass? {
@@ -384,6 +428,29 @@ class DecompiledApk internal constructor(
     // --- Private helpers ---
 
     private fun classNames(): Sequence<String> = classIndex.asSequence().map { it.name }
+
+    private fun String.toRegexOrNull(): Regex? = runCatching {
+        Regex(this, RegexOption.IGNORE_CASE)
+    }.getOrNull()
+
+    private fun matchesSearchQuery(line: String, query: String, regex: Regex?): Boolean {
+        if (regex != null) {
+            return regex.containsMatchIn(line)
+        }
+        return line.contains(query, ignoreCase = true)
+    }
+
+    private fun matchesStringLiteralQuery(line: String, query: String, regex: Regex?, literalPattern: Regex): Boolean {
+        for (match in literalPattern.findAll(line)) {
+            val literal = match.groupValues[1]
+            if (regex != null) {
+                if (regex.containsMatchIn(literal)) return true
+            } else if (literal.contains(query, ignoreCase = true)) {
+                return true
+            }
+        }
+        return false
+    }
 
     private fun <T> runFullCodeScan(block: () -> T): T {
         return try {
@@ -577,6 +644,19 @@ class DecompiledApk internal constructor(
         return methods.find { it.name == methodName }
     }
 
+    private fun extractSmaliMethod(smali: String, shortId: String): String? {
+        val lines = smali.lines()
+        val start = lines.indexOfFirst { line ->
+            val declaration = line.trim()
+            declaration.startsWith(".method ") && declaration.substringAfter(".method ").endsWith(shortId)
+        }
+        if (start == -1) return null
+
+        val end = (start + 1 until lines.size).firstOrNull { lines[it].trim() == ".end method" }
+            ?: (lines.size - 1)
+        return lines.subList(start, end + 1).joinToString("\n")
+    }
+
     private fun buildSignature(method: JavaMethod): String {
         val params = method.arguments.joinToString(", ") { it.toString() }
         return "${method.returnType} ${method.name}($params)"
@@ -643,6 +723,61 @@ class DecompiledApk internal constructor(
                 }
             }
             else -> null
+        }
+    }
+
+    private fun findContainerText(container: ResContainer, path: String): String? {
+        if (container.name.removePrefix("/") == path) {
+            return when (container.dataType) {
+                ResContainer.DataType.TEXT, ResContainer.DataType.RES_TABLE -> container.text.codeStr
+                else -> null
+            }
+        }
+        for (subFile in container.subFiles) {
+            findContainerText(subFile, path)?.let { return it }
+        }
+        return null
+    }
+
+    private fun searchResourceContainer(
+        container: ResContainer,
+        resourceType: String,
+        query: String,
+        regex: Regex?,
+        caseSensitive: Boolean,
+        limit: Int,
+        results: MutableList<ResourceSearchMatch>
+    ) {
+        if (results.size >= limit) return
+        if (container.dataType == ResContainer.DataType.TEXT || container.dataType == ResContainer.DataType.RES_TABLE) {
+            val content = try { container.text.codeStr } catch (_: Exception) { "" }
+            for ((lineIndex, line) in content.lineSequence().withIndex()) {
+                if (results.size >= limit) return
+                val columns = if (regex != null) {
+                    regex.findAll(line).map { it.range.first + 1 }
+                } else {
+                    literalMatchColumns(line, query, caseSensitive)
+                }
+                for (column in columns) {
+                    results.add(ResourceSearchMatch(container.name, resourceType, lineIndex + 1, column, line.trim()))
+                    if (results.size >= limit) return
+                }
+            }
+        }
+        for (subFile in container.subFiles) {
+            searchResourceContainer(subFile, ResourceType.XML.name, query, regex, caseSensitive, limit, results)
+            if (results.size >= limit) return
+        }
+    }
+
+    private fun literalMatchColumns(line: String, query: String, caseSensitive: Boolean): Sequence<Int> = sequence {
+        if (query.isEmpty()) return@sequence
+        var start = 0
+        while (start <= line.length - query.length) {
+            val index = line.indexOf(query, start, ignoreCase = !caseSensitive)
+            if (index == -1) break
+            yield(index + 1)
+            start = index + query.length
         }
     }
 
@@ -778,6 +913,14 @@ data class ResourceInfo(
     val name: String,
     val type: String,
     val path: String
+)
+
+data class ResourceSearchMatch(
+    val path: String,
+    val type: String,
+    val line: Int,
+    val column: Int,
+    val content: String
 )
 
 data class UnloadSummary(

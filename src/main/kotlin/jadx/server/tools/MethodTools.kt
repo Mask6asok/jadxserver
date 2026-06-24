@@ -17,6 +17,10 @@ object MethodTools {
             .param("class_name", "string", "Fully qualified class name", true)
             .param("method_name", "string", "Method name", true)
             .param("signature", "string", "Method signature for disambiguation (optional)", false),
+        McpToolDef("get_smali", "Return class Smali or the exact bytecode block for a method")
+            .param("class_name", "string", "Fully qualified class name", true)
+            .param("method_name", "string", "Method name; omit to return the complete class", false)
+            .param("signature", "string", "Method signature for overload disambiguation", false),
         McpToolDef("list_methods", "List all methods of a class with signatures")
             .param("class_name", "string", "Fully qualified class name", true)
     )
@@ -28,15 +32,59 @@ object MethodTools {
             ?: return ToolResult.badParams("Missing required parameter: method_name")
         val signature = args.getString("signature")
 
-        val code = apk.getMethodCode(className, methodName, signature)
-            ?: return ToolResult.notFound("Method not found: $className.$methodName")
+        val code = try { apk.getMethodCode(className, methodName, signature) } catch (_: Exception) { null }
+        if (code != null && !isFailedDecompilation(code)) {
+            return ToolResult.success {
+                put("class_name", JsonPrimitive(className))
+                put("method_name", JsonPrimitive(methodName))
+                put("format", JsonPrimitive("java"))
+                put("fallback", JsonPrimitive(false))
+                put("source", JsonPrimitive(code))
+            }
+        }
+
+        val smali = try { apk.getSmali(className, methodName, signature) } catch (_: Exception) { null }
+            ?: return ToolResult.notFound("Method not found or Smali unavailable: $className.$methodName")
 
         return ToolResult.success {
             put("class_name", JsonPrimitive(className))
             put("method_name", JsonPrimitive(methodName))
-            put("source", JsonPrimitive(code))
+            put("format", JsonPrimitive("smali"))
+            put("fallback", JsonPrimitive(true))
+            put("source", JsonPrimitive(smali))
         }
     }
+
+    fun getSmali(apk: DecompiledApk, args: JsonObject): ToolResult {
+        val className = args.getString("class_name")
+            ?: return ToolResult.badParams("Missing required parameter: class_name")
+        val methodName = args.getString("method_name")
+        val signature = args.getString("signature")
+
+        val smali = try { apk.getSmali(className, methodName, signature) } catch (_: Exception) { null }
+            ?: return ToolResult.notFound(
+                if (methodName == null) "Class not found or Smali unavailable: $className"
+                else "Method not found or Smali unavailable: $className.$methodName"
+            )
+
+        return ToolResult.success {
+            put("class_name", JsonPrimitive(className))
+            if (methodName != null) put("method_name", JsonPrimitive(methodName))
+            put("format", JsonPrimitive("smali"))
+            put("source", JsonPrimitive(smali))
+        }
+    }
+
+    private fun isFailedDecompilation(code: String): Boolean {
+        if (code.isBlank()) return true
+        return FAILED_DECOMPILATION_MARKERS.any(code::contains)
+    }
+
+    private val FAILED_DECOMPILATION_MARKERS = listOf(
+        "JADX ERROR:",
+        "Method not decompiled:",
+        "Code decompiled incorrectly, please refer to instructions dump."
+    )
 
     fun listMethods(apk: DecompiledApk, args: JsonObject): ToolResult {
         val className = args.getString("class_name")

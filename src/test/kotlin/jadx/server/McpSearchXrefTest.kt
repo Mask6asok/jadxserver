@@ -21,7 +21,7 @@ import kotlin.test.*
 /**
  * Integration test for search and cross-reference MCP tools against a real APK fixture.
  *
- * Uses the 80MB test/apps/com.huawei.hwread.dz.apk fixture — decompilation is slow,
+ * Uses the test/apps/com.huawei.notepad.apk fixture — decompilation is slow,
  * hence the @Tag("slow") to allow exclusion in fast test suites.
  *
  * Tests: search_code, search_string, find_class, class_xrefs (TEXT + JADX),
@@ -46,7 +46,7 @@ class McpSearchXrefTest {
         registry = ToolRegistry.build(state)
 
         val apkFile = Path.of(System.getProperty("user.dir"))
-            .resolve("test/apps/com.huawei.hwread.dz.apk")
+            .resolve("test/apps/com.huawei.notepad.apk")
         assertTrue(Files.exists(apkFile), "No test APK found at: $apkFile")
 
         val entry = state.fileIndex.add(apkFile, tempDir)
@@ -86,6 +86,17 @@ class McpSearchXrefTest {
     }
 
     @Test
+    fun testSearchCodeRegexPattern() {
+        val result = registry.executeAnalysis("search_code", apk, buildJsonObject {
+            put("pattern", JsonPrimitive("public\\s+class"))
+        })
+        assertTrue(result is ToolResult.Success, "Expected success, got $result")
+        val matchCount = (result.data["match_count"] as? JsonPrimitive)?.content?.toIntOrNull()
+        assertNotNull(matchCount)
+        assertTrue(matchCount > 0, "Expected regex matches for 'public\\s+class', got 0")
+    }
+
+    @Test
     fun testSearchCodeNoMatch() {
         val result = registry.executeAnalysis("search_code", apk, buildJsonObject {
             put("pattern", JsonPrimitive("XYZZY_NO_SUCH_PATTERN_987654321"))
@@ -98,6 +109,26 @@ class McpSearchXrefTest {
     // ── search_string ────────────────────────────────────────────────────────
 
     @Test
+    fun testSearchCodeRepairsPatternMisplacedInDescription() {
+        val result = registry.executeAnalysis("search_code", apk, buildJsonObject {
+            put("description", JsonPrimitive("pattern: class"))
+        })
+
+        assertTrue(result is ToolResult.Success, "Expected compatibility repair, got $result")
+        assertEquals("class", (result.data["pattern"] as? JsonPrimitive)?.content)
+    }
+
+    @Test
+    fun testSearchCodeRejectsUnlabeledDescription() {
+        val result = registry.executeAnalysis("search_code", apk, buildJsonObject {
+            put("description", JsonPrimitive("class"))
+        })
+
+        assertTrue(result is ToolResult.Error)
+        assertEquals(-32602, result.code)
+    }
+
+    @Test
     fun testSearchString() {
         val result = registry.executeAnalysis("search_string", apk, buildJsonObject {
             put("query", JsonPrimitive("http"))
@@ -106,6 +137,17 @@ class McpSearchXrefTest {
         val matchCount = (result.data["match_count"] as? JsonPrimitive)?.content?.toIntOrNull()
         assertNotNull(matchCount)
         assertTrue(matchCount > 0, "Expected string matches for 'http', got 0")
+    }
+
+    @Test
+    fun testSearchStringRegexPattern() {
+        val result = registry.executeAnalysis("search_string", apk, buildJsonObject {
+            put("query", JsonPrimitive("http[s]?://"))
+        })
+        assertTrue(result is ToolResult.Success, "Expected success, got $result")
+        val matchCount = (result.data["match_count"] as? JsonPrimitive)?.content?.toIntOrNull()
+        assertNotNull(matchCount)
+        assertTrue(matchCount > 0, "Expected regex matches for 'http[s]?://', got 0")
     }
 
     // ── find_class ───────────────────────────────────────────────────────────

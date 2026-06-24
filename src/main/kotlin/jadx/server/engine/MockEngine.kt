@@ -72,16 +72,28 @@ class MockDecompiledApk(val fileName: String) {
     }
 
     fun searchCode(query: String, limit: Int = 100): List<SearchMatch> {
+        val regex = query.toRegexOrNull()
         val results = mutableListOf<SearchMatch>()
         for ((className, code) in stubClasses) {
             if (results.size >= limit) break
             code.lines().forEachIndexed { index, line ->
                 if (results.size >= limit) return@forEachIndexed
-                if (line.contains(query, ignoreCase = true)) {
+                if (matchesSearchQuery(line, query, regex)) {
                     results.add(SearchMatch(className, index + 1, line.trim()))
                 }
             }
         }
         return results
+    }
+
+    private fun String.toRegexOrNull(): Regex? = runCatching {
+        Regex(this, RegexOption.IGNORE_CASE)
+    }.getOrNull()
+
+    private fun matchesSearchQuery(line: String, query: String, regex: Regex?): Boolean {
+        if (regex != null) {
+            return regex.containsMatchIn(line)
+        }
+        return line.contains(query, ignoreCase = true)
     }
 }

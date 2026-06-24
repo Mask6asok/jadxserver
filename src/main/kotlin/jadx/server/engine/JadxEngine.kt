@@ -47,7 +47,7 @@ class JadxEngine : DecompilerEngine {
             .param("limit", "number", "Maximum number of results"),
 
         McpToolDef("search_string", "Search for string literals in decompiled code")
-            .param("query", "string", "String to search for within string literals", required = true)
+            .param("query", "string", "String or regex to search for within string literals", required = true)
             .param("limit", "number", "Maximum number of results"),
 
         McpToolDef("class_xrefs", "Find cross-references for a class (who uses it and what it uses)")
@@ -69,8 +69,16 @@ class JadxEngine : DecompilerEngine {
 
         McpToolDef("list_resources", "List all resource files in the APK"),
 
+        McpToolDef("search_resource", "Search decoded resource text, including AndroidManifest.xml and XML generated from resources.arsc")
+            .param("query", "string", "Text or regular expression to find", required = true)
+            .param("regex", "boolean", "Interpret query as a regular expression")
+            .param("case_sensitive", "boolean", "Use case-sensitive matching")
+            .param("limit", "number", "Maximum number of matches"),
+
         McpToolDef("get_smali", "Get smali (Dalvik bytecode) representation of a class")
-            .param("class_name", "string", "Fully qualified class name", required = true),
+            .param("class_name", "string", "Fully qualified class name", required = true)
+            .param("method_name", "string", "Method name; omit to return the complete class")
+            .param("signature", "string", "Method signature for overload disambiguation"),
 
         McpToolDef("get_apk_metadata", "Get APK metadata including package name, version, permissions, and components"),
 

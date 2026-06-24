@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "jadx.server"
-version = "0.1.7"
+version = "0.1.8"
 
 repositories {
     mavenCentral()
@@ -42,6 +42,7 @@ dependencies {
     runtimeOnly(files("ref/jadx/jadx-plugins/jadx-apkm-input/build/libs/jadx-apkm-input-dev.jar"))
     runtimeOnly(files("ref/jadx/jadx-plugins-tools/build/libs/jadx-plugins-tools-dev.jar"))
     runtimeOnly(files("ref/jadx/jadx-commons/jadx-app-commons/build/libs/jadx-app-commons-dev.jar"))
+    runtimeOnly("com.android.tools.smali:smali-baksmali:3.0.9")
 
     // ── jadx transitive deps ──
     implementation("com.google.code.gson:gson:2.13.2")

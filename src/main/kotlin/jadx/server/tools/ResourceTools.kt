@@ -4,6 +4,8 @@ import jadx.server.engine.DecompiledApk
 import jadx.server.mcp.McpToolDef
 import jadx.server.mcp.ToolResult
 import jadx.server.util.getString
+import jadx.server.util.getBoolean
+import jadx.server.util.getInt
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -17,7 +19,12 @@ object ResourceTools {
         McpToolDef("get_resource", "Return specific resource file content by path")
             .param("path", "string", "Resource path (e.g. res/values/strings.xml)", true),
         McpToolDef("list_resources", "List all resource files with types")
-            .param("type", "string", "Filter by resource type (e.g. xml, png)", false)
+            .param("type", "string", "Filter by resource type (e.g. xml, png)", false),
+        McpToolDef("search_resource", "Search decoded resource text, including AndroidManifest.xml and XML generated from resources.arsc")
+            .param("query", "string", "Text or regular expression to find", true)
+            .param("regex", "boolean", "Interpret query as a regular expression (default: false)", false)
+            .param("case_sensitive", "boolean", "Case-sensitive matching (default: false)", false)
+            .param("limit", "number", "Maximum matches (default: 100, max: 5000)", false)
     )
 
     fun getManifest(apk: DecompiledApk, args: JsonObject): ToolResult {
@@ -58,6 +65,42 @@ object ResourceTools {
                         put("name", JsonPrimitive(r.name))
                         put("type", JsonPrimitive(r.type))
                         put("path", JsonPrimitive(r.path))
+                    })
+                }
+            })
+        }
+    }
+
+    fun searchResource(apk: DecompiledApk, args: JsonObject): ToolResult {
+        val query = args.getString("query")
+            ?: return ToolResult.badParams("Missing required parameter: query")
+        if (query.isEmpty()) return ToolResult.badParams("Parameter 'query' must not be empty")
+
+        val useRegex = args.getBoolean("regex", false)
+        val caseSensitive = args.getBoolean("case_sensitive", false)
+        val limit = args.getInt("limit", 100).coerceIn(1, 5000)
+        val regex = if (useRegex) {
+            try {
+                Regex(query, if (caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE))
+            } catch (e: IllegalArgumentException) {
+                return ToolResult.badParams("Invalid regular expression: ${e.message}")
+            }
+        } else {
+            null
+        }
+
+        val matches = apk.searchResources(query, limit, regex, caseSensitive)
+        return ToolResult.success {
+            put("query", JsonPrimitive(query))
+            put("match_count", JsonPrimitive(matches.size))
+            put("matches", buildJsonArray {
+                for (match in matches) {
+                    add(buildJsonObject {
+                        put("path", JsonPrimitive(match.path))
+                        put("type", JsonPrimitive(match.type))
+                        put("line", JsonPrimitive(match.line))
+                        put("column", JsonPrimitive(match.column))
+                        put("content", JsonPrimitive(match.content))
                     })
                 }
             })

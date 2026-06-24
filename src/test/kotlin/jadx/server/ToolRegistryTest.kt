@@ -57,7 +57,9 @@ class ToolRegistryTest {
     @Test
     fun testAnalysisToolWeightResolution() {
         assertEquals(ToolWeight.HEAVY, registry.analysisToolWeight("decompile_apk"), "heavy tool")
+        assertEquals(ToolWeight.HEAVY, registry.analysisToolWeight("search_resource"), "resource search tool")
         assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("list_classes"), "light tool")
+        assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("get_smali"), "smali tool")
         assertNull(registry.analysisToolWeight("non_existent_tool"), "unknown tool")
     }
 }
