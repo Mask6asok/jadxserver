@@ -12,8 +12,10 @@ build.sh
 .DS_Store
 .omo
 server.log
+logback-local.xml
 backup
 test
 oom.hprof
 run.sh
 AGENTS.md
+AUTHORIZATION_ROLLBACK.md
