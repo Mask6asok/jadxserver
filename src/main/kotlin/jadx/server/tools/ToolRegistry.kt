@@ -198,6 +198,12 @@ class ToolRegistry private constructor(
 
             regAnalysis(ToolWeight.LIGHT, ResourceTools.definitions(),
                 "get_manifest" to AnalysisToolHandler(ResourceTools::getManifest),
+                "get_manifest_summary" to AnalysisToolHandler(ResourceTools::getManifestSummary),
+                "list_manifest_permissions" to AnalysisToolHandler(ResourceTools::listManifestPermissions),
+                "list_manifest_components" to AnalysisToolHandler(ResourceTools::listManifestComponents),
+                "search_manifest_components" to AnalysisToolHandler(ResourceTools::searchManifestComponents),
+                "list_manifest_intent_filters" to AnalysisToolHandler(ResourceTools::listManifestIntentFilters),
+                "get_manifest_entrypoints" to AnalysisToolHandler(ResourceTools::getManifestEntrypoints),
                 "get_resource" to AnalysisToolHandler(ResourceTools::getResource),
                 "list_resources" to AnalysisToolHandler(ResourceTools::listResources),
                 "search_resource" to AnalysisToolHandler(ResourceTools::searchResource),

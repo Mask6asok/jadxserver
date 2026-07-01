@@ -10,8 +10,10 @@ import jadx.api.ResourceType
 import jadx.api.ICodeInfo
 import jadx.api.utils.CodeUtils
 import jadx.core.dex.nodes.ProcessState
+import jadx.core.utils.tasks.TaskExecutor
 import jadx.core.xmlgen.ResContainer
 import jadx.server.config.XrefMode
+import jadx.server.server.ProjectCacheLayout
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
 import java.io.Closeable
@@ -19,6 +21,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.util.Comparator
+import java.util.Collections
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class DecompiledApk internal constructor(
     private val decompiler: JadxDecompiler,
@@ -38,6 +45,8 @@ class DecompiledApk internal constructor(
     private val resolvedClassCache = object : LinkedHashMap<String, JavaClass>(128, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JavaClass>?): Boolean = size > RESOLVED_CLASS_CACHE_CAPACITY
     }
+    @Volatile
+    private var fullCodeCacheWarm = false
 
     private fun touch() { lastAccess = Instant.now() }
 
@@ -128,6 +137,12 @@ class DecompiledApk internal constructor(
     fun searchCode(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
         val regex = query.toRegexOrNull()
+        if (sourceDir != null) {
+            warmupCodeCache()
+            return searchCachedCode(limit) { line ->
+                matchesSearchQuery(line, query, regex)
+            }
+        }
         return runFullCodeScan {
             val results = mutableListOf<SearchMatch>()
             for ((processed, className) in classNames().withIndex()) {
@@ -148,6 +163,13 @@ class DecompiledApk internal constructor(
     fun searchString(query: String, limit: Int = 100): List<SearchMatch> {
         touch()
         val regex = query.toRegexOrNull()
+        if (sourceDir != null) {
+            warmupCodeCache()
+            val literalPattern = Regex("\"([^\"]*)\"")
+            return searchCachedCode(limit) { line ->
+                matchesStringLiteralQuery(line, query, regex, literalPattern)
+            }
+        }
         return runFullCodeScan {
             val literalPattern = Regex("\"([^\"]*)\"")
             val results = mutableListOf<SearchMatch>()
@@ -164,6 +186,82 @@ class DecompiledApk internal constructor(
             }
             results
         }
+    }
+
+    fun warmupCodeCache(): CodeCacheWarmup {
+        touch()
+        val classes = decompiler.classes
+            .asSequence()
+            .filter { !it.isInner && !it.isNoCode }
+            .toList()
+        if (classes.isEmpty()) {
+            fullCodeCacheWarm = true
+            return CodeCacheWarmup(totalClasses = 0, generatedClasses = 0, cachedClasses = 0, failedClasses = 0)
+        }
+
+        val codeCache = decompiler.args.codeCache
+        if (fullCodeCacheWarm) {
+            val cachedCount = classes.count { cls ->
+                runCatching { codeCache.contains(cls.rawName) }.getOrDefault(false)
+            }
+            if (cachedCount == classes.size) {
+                return CodeCacheWarmup(
+                    totalClasses = classes.size,
+                    generatedClasses = 0,
+                    cachedClasses = cachedCount,
+                    failedClasses = 0
+                )
+            }
+            fullCodeCacheWarm = false
+        }
+
+        val generatedCount = AtomicInteger(0)
+        val cachedCount = AtomicInteger(0)
+        val failedCount = AtomicInteger(0)
+        val batches = try {
+            decompiler.decompileScheduler.buildBatches(classes)
+        } catch (e: Exception) {
+            logger.warn("Failed to build JADX decompile batches, falling back to one linear batch: {}", e.message)
+            listOf(classes)
+        }
+        val jobs = batches.map { batch ->
+            Runnable {
+                for (cls in batch) {
+                    try {
+                        if (codeCache.contains(cls.rawName)) {
+                            cachedCount.incrementAndGet()
+                        } else {
+                            cls.decompile()
+                            generatedCount.incrementAndGet()
+                        }
+                    } catch (e: OutOfMemoryError) {
+                        throw e
+                    } catch (e: Throwable) {
+                        failedCount.incrementAndGet()
+                        logger.debug("Failed to warm source cache for {}", cls.fullName, e)
+                    }
+                }
+            }
+        }
+
+        val executor = TaskExecutor()
+        executor.setThreadsCount(resolveWorkerThreads())
+        executor.addParallelTasks(jobs)
+        try {
+            executor.execute()
+            executor.awaitTermination()
+        } finally {
+            unloadClasses()
+            System.gc()
+        }
+
+        fullCodeCacheWarm = failedCount.get() == 0
+        return CodeCacheWarmup(
+            totalClasses = classes.size,
+            generatedClasses = generatedCount.get(),
+            cachedClasses = cachedCount.get(),
+            failedClasses = failedCount.get()
+        )
     }
 
     fun getClassXrefs(className: String, limit: Int = 100, mode: String? = null): List<XrefMatch> {
@@ -428,6 +526,90 @@ class DecompiledApk internal constructor(
     // --- Private helpers ---
 
     private fun classNames(): Sequence<String> = classIndex.asSequence().map { it.name }
+
+    private fun sourceClasses(): List<SourceClass> {
+        val dir = sourceDir ?: return emptyList()
+        val layout = ProjectCacheLayout(dir.parent)
+        return decompiler.classes
+            .asSequence()
+            .filter { !it.isInner && !it.isNoCode }
+            .map { SourceClass(it.fullName, layout.sourceFileFor(it.rawName)) }
+            .toList()
+    }
+
+    private fun searchCachedCode(limit: Int, lineMatches: (String) -> Boolean): List<SearchMatch> {
+        val classes = sourceClasses()
+        if (classes.isEmpty()) {
+            return emptyList()
+        }
+        val results = Collections.synchronizedList(mutableListOf<SearchMatch>())
+        val nextIndex = AtomicInteger(0)
+        val done = AtomicBoolean(false)
+        val workerCount = resolveWorkerThreads().coerceAtMost(classes.size)
+        val executor = Executors.newFixedThreadPool(workerCount) { runnable ->
+            Thread(runnable, "jadx-search-worker").apply { isDaemon = true }
+        }
+        repeat(workerCount) {
+            executor.execute {
+                while (!done.get()) {
+                    val index = nextIndex.getAndIncrement()
+                    if (index >= classes.size) {
+                        return@execute
+                    }
+                    scanSourceFile(classes[index], limit, lineMatches, results, done)
+                }
+            }
+        }
+        executor.shutdown()
+        executor.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS)
+        return results.take(limit)
+    }
+
+    private fun scanSourceFile(
+        source: SourceClass,
+        limit: Int,
+        lineMatches: (String) -> Boolean,
+        results: MutableList<SearchMatch>,
+        done: AtomicBoolean
+    ) {
+        if (!Files.exists(source.file)) {
+            return
+        }
+        try {
+            Files.newBufferedReader(source.file).use { reader ->
+                var lineNo = 0
+                while (!done.get()) {
+                    val line = reader.readLine() ?: break
+                    lineNo++
+                    if (!lineMatches(line)) {
+                        continue
+                    }
+                    val reachedLimit = synchronized(results) {
+                        if (results.size >= limit) {
+                            true
+                        } else {
+                            results.add(SearchMatch(source.className, lineNo, line.trim()))
+                            results.size >= limit
+                        }
+                    }
+                    if (reachedLimit) {
+                        done.set(true)
+                        return
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logger.debug("Failed to scan cached source {}", source.file, e)
+        }
+    }
+
+    private fun resolveWorkerThreads(): Int {
+        val configured = runCatching { decompiler.args.threadsCount }.getOrDefault(0)
+        if (configured > 0) {
+            return configured
+        }
+        return maxOf(2, Runtime.getRuntime().availableProcessors() / 2).coerceAtMost(8)
+    }
 
     private fun String.toRegexOrNull(): Regex? = runCatching {
         Regex(this, RegexOption.IGNORE_CASE)
@@ -787,6 +969,11 @@ class DecompiledApk internal constructor(
         const val MIN_FREE_MEMORY_RATIO = 0.2
         const val MAX_MIN_FREE_MEMORY_BYTES = 512L * 1024L * 1024L
     }
+
+    private data class SourceClass(
+        val className: String,
+        val file: Path
+    )
 }
 
 internal data class ClassIndexEntry(
@@ -897,6 +1084,13 @@ data class SearchMatch(
     val className: String,
     val line: Int,
     val content: String
+)
+
+data class CodeCacheWarmup(
+    val totalClasses: Int,
+    val generatedClasses: Int,
+    val cachedClasses: Int,
+    val failedClasses: Int
 )
 
 @Serializable

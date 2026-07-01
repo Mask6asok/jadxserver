@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "jadx.server"
-version = "0.1.8"
+version = "0.1.9"
 
 repositories {
     mavenCentral()
@@ -63,7 +63,7 @@ application {
     mainClass.set("jadx.server.MainKt")
     applicationDefaultJvmArgs = listOf(
         "-Xms256M",
-        "-XX:MaxRAMPercentage=50.0",
+        "-Xmx8G",
         "-XX:+UseG1GC",
         "-XX:MaxGCPauseMillis=200",
         "-XX:G1PeriodicGCInterval=30000",

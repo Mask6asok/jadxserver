@@ -16,7 +16,7 @@ interface DecompilerEngine {
 }
 
 data class EngineOptions(
-    val threads: Int = 4,
+    val threads: Int = 0,
     val deobfuscate: Boolean = false,
     val skipResources: Boolean = false,
     val classFilter: String? = null,

@@ -36,6 +36,7 @@ fun main(args: Array<String>) {
     var upload = "./uploads"
     var xrefMode = XrefMode.JADX
     var maxPerFile = 4
+    var engineThreads = 0
     var idleTimeout = Duration.ofMinutes(5)
     var cleanupInterval = Duration.ofSeconds(10)
     var maxCachedApks = -1
@@ -52,6 +53,7 @@ fun main(args: Array<String>) {
             "--upload-dir" -> { if (i+1 < args.size) upload = args[i+1]; i++ }
             "--xref-mode" -> { if (i+1 < args.size) xrefMode = XrefMode.valueOf(args[i+1].uppercase()); i++ }
             "--max-per-file" -> { if (i+1 < args.size) maxPerFile = args[i+1].toIntOrNull() ?: 4; i++ }
+            "--engine-threads" -> { if (i+1 < args.size) engineThreads = args[i+1].toIntOrNull() ?: 0; i++ }
             "--idle-timeout" -> { if (i+1 < args.size) idleTimeout = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 300); i++ }
             "--cleanup-interval" -> { if (i+1 < args.size) cleanupInterval = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 10); i++ }
             "--max-cached-apks" -> { if (i+1 < args.size) maxCachedApks = args[i+1].toIntOrNull() ?: 10; i++ }
@@ -74,6 +76,7 @@ fun main(args: Array<String>) {
         authorizationToken = authorizationToken,
         maxInstances = maxInst,
         maxPerFile = maxPerFile,
+        engineThreads = engineThreads,
         idleTimeout = idleTimeout,
         cleanupInterval = cleanupInterval,
         maxCachedApks = maxCachedApks,
@@ -166,6 +169,7 @@ fun printHelp() {
           --auth-token <token>       Require this Bearer token for /mcp
           --max-instances, -m <n>    Max engine instances, 0=auto(min CPU/4, lower-bounded to 1, upper-bounded to 2)
           --max-per-file <n>         Max concurrent instances per file (default: 4)
+          --engine-threads <n>       JADX worker threads per engine, 0=auto(min(CPU/2, 8))
           --idle-timeout <s>         Idle engine eviction timeout in seconds (default: 300)
           --cleanup-interval <s>     Eviction check interval in seconds (default: 10)
           --max-cached-apks <n>      Max cached APK entries (default: 10)

@@ -23,10 +23,16 @@ class ServerState(
         Files.createDirectories(config.uploadDir)
         fileIndex = FileIndex.loadFromUploadDir(config.uploadDir)
         fileIndex.setMaxEntries(config.maxCachedApks)
+        val resolvedMaxTotal = if (config.maxInstances > 0) {
+            config.maxInstances
+        } else if (Runtime.getRuntime().maxMemory() <= LOW_HEAP_PROFILE_BYTES) {
+            1
+        } else {
+            maxOf(1, minOf(Runtime.getRuntime().availableProcessors() / 4, 2))
+        }
         val poolConfig = PoolConfig(
-            maxTotal = if (config.maxInstances > 0) config.maxInstances
-            else maxOf(1, minOf(Runtime.getRuntime().availableProcessors() / 4, 2)),
-            maxPerFile = config.maxPerFile,
+            maxTotal = resolvedMaxTotal,
+            maxPerFile = config.maxPerFile.coerceAtMost(resolvedMaxTotal),
             idleTimeout = config.idleTimeout
         )
         enginePool = EnginePool(poolConfig, engine, fileIndex)
@@ -38,5 +44,9 @@ class ServerState(
         idleEvictor.shutdown()
         enginePool.evict(Duration.ZERO).forEach { engine.close(it) }
         fileIndex.persist(config.uploadDir)
+    }
+
+    private companion object {
+        const val LOW_HEAP_PROFILE_BYTES = 12L * 1024L * 1024L * 1024L
     }
 }

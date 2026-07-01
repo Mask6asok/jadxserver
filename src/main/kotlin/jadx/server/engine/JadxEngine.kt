@@ -64,6 +64,25 @@ class JadxEngine : DecompilerEngine {
 
         McpToolDef("get_manifest", "Get the decoded AndroidManifest.xml content"),
 
+        McpToolDef("get_manifest_summary", "Return structured AndroidManifest.xml package, version, SDK, and application summary"),
+
+        McpToolDef("list_manifest_permissions", "List manifest uses-permission, declared permission, and uses-feature entries"),
+
+        McpToolDef("list_manifest_components", "List Android manifest components with intent filters and key attributes")
+            .param("type", "string", "Filter by component type: activity, activity_alias, service, receiver, provider, or all"),
+
+        McpToolDef("search_manifest_components", "Search Android manifest component XML nodes and return each complete matching node")
+            .param("query", "string", "Text or regular expression to find in component name or XML node", required = true)
+            .param("type", "string", "Filter by component type: activity, activity_alias, service, receiver, provider, or all")
+            .param("regex", "boolean", "Interpret query as a regular expression")
+            .param("case_sensitive", "boolean", "Use case-sensitive matching")
+            .param("limit", "number", "Maximum number of matches"),
+
+        McpToolDef("list_manifest_intent_filters", "List manifest intent filters attached to activities, services, receivers, providers, and aliases")
+            .param("type", "string", "Filter by component type: activity, activity_alias, service, receiver, provider, or all"),
+
+        McpToolDef("get_manifest_entrypoints", "Return launcher activities, exported components, and deep link entrypoints from AndroidManifest.xml"),
+
         McpToolDef("get_resource", "Get content of a specific resource file by path")
             .param("path", "string", "Resource file path (e.g. res/values/strings.xml)", required = true),
 
@@ -94,6 +113,7 @@ class JadxEngine : DecompilerEngine {
         } else {
             null
         }
+        var decompiler: JadxDecompiler? = null
         try {
             val sourceDir = options.sourceDir ?: ownedCacheDir!!.resolve("code")
             val projectCacheLayout = sourceDir.parent.let(::ProjectCacheLayout)
@@ -104,7 +124,7 @@ class JadxEngine : DecompilerEngine {
             }
             val args = JadxArgs().apply {
                 inputFiles = (options.inputFiles ?: listOf(file)).map { it.toFile() }.toMutableList()
-                threadsCount = options.threads
+                threadsCount = resolveThreads(options.threads)
                 isDeobfuscationOn = options.deobfuscate
                 isSkipResources = options.skipResources
                 codeCache = ProjectDiskCodeCache(sourceDir)
@@ -123,7 +143,7 @@ class JadxEngine : DecompilerEngine {
                 }
             }
 
-            val decompiler = JadxDecompiler(args)
+            decompiler = JadxDecompiler(args)
             decompiler.load()
 
             val classes = decompiler.classes
@@ -152,15 +172,27 @@ class JadxEngine : DecompilerEngine {
                 fileHash = file.fileName.toString(),
                 state = apk
             )
-        } catch (e: Exception) {
+        } catch (failure: Throwable) {
+            try {
+                decompiler?.close()
+            } catch (cleanupError: Throwable) {
+                if (failure !is OutOfMemoryError) {
+                    logger.warn("Failed to close decompiler after open failure: {}", cleanupError.message)
+                }
+            }
             if (ownedCacheDir != null) {
                 try {
                     deleteRecursivelyIfExists(ownedCacheDir)
-                } catch (cleanupError: Exception) {
-                    logger.warn("Failed to delete temporary cache directory {} after open failure: {}", ownedCacheDir, cleanupError.message)
+                } catch (cleanupError: Throwable) {
+                    if (failure !is OutOfMemoryError) {
+                        logger.warn("Failed to delete temporary cache directory {} after open failure: {}", ownedCacheDir, cleanupError.message)
+                    }
                 }
             }
-            throw e
+            if (failure is OutOfMemoryError) {
+                System.gc()
+            }
+            throw failure
         }
     }
 
@@ -175,6 +207,13 @@ class JadxEngine : DecompilerEngine {
             classFilter = options.classFilter,
             xrefMode = options.xrefMode.name,
         )
+    }
+
+    private fun resolveThreads(configuredThreads: Int): Int {
+        if (configuredThreads > 0) {
+            return configuredThreads
+        }
+        return maxOf(2, Runtime.getRuntime().availableProcessors() / 2).coerceAtMost(8)
     }
 
     private fun pluginOptionsFingerprint(pluginOptions: Map<String, String>): String {

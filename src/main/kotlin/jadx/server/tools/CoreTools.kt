@@ -25,6 +25,7 @@ object CoreTools {
 
     fun decompileApk(apk: DecompiledApk, args: JsonObject): ToolResult {
         val meta = apk.metadata
+        val warmup = apk.warmupCodeCache()
         return ToolResult.success {
             put("package_name", JsonPrimitive(meta.packageName))
             put("class_count", JsonPrimitive(meta.classCount))
@@ -37,6 +38,13 @@ object CoreTools {
             put("target_sdk", JsonPrimitive(meta.targetSdk))
             put("version_name", JsonPrimitive(meta.versionName))
             put("version_code", JsonPrimitive(meta.versionCode))
+            put("code_cache", buildJsonObject {
+                put("total_classes", JsonPrimitive(warmup.totalClasses))
+                put("generated_classes", JsonPrimitive(warmup.generatedClasses))
+                put("cached_classes", JsonPrimitive(warmup.cachedClasses))
+                put("failed_classes", JsonPrimitive(warmup.failedClasses))
+                put("ready", JsonPrimitive(warmup.failedClasses == 0))
+            })
         }
     }
 

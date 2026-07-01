@@ -39,7 +39,7 @@ class McpHandler(private val state: ServerState) {
 
     fun createServer(): Server {
         val server = Server(
-            Implementation(name = "jadx-server", version = "0.1.8"),
+            Implementation(name = "jadx-server", version = "0.1.9"),
             ServerOptions(
                 capabilities = ServerCapabilities(
                     tools = ServerCapabilities.Tools(listChanged = true)
@@ -137,7 +137,7 @@ class McpHandler(private val state: ServerState) {
         }
 
         val sourceDir = when {
-            toolName == "get_manifest" -> null
+            toolName in manifestOnlyTools -> null
             resolvedProject != null -> projectService.resolveProjectCacheDir(projectFile!!, resolvedProject)?.resolve("code")
             entry.cacheDirPath != null -> Path.of(entry.cacheDirPath!!).resolve("code")
             else -> state.config.uploadDir.resolve("binary").resolve(entry.md5).resolve("project.cache").resolve("code")
@@ -150,6 +150,7 @@ class McpHandler(private val state: ServerState) {
         }
 
         val engineOptions = EngineOptions(
+            threads = resolveEngineThreads(),
             sourceDir = sourceDir,
             projectFile = projectFile,
             inputFiles = inputFiles,
@@ -185,6 +186,9 @@ class McpHandler(private val state: ServerState) {
                                 reason = "analysis_timeout",
                                 message = "Tool execution timed out"
                             )
+                        } catch (e: OutOfMemoryError) {
+                            recoverFromOutOfMemory(acquireResult.instance, entry.hash, cleanupContext)
+                            memoryExhaustedFailure(toolName, "tool_execution")
                         } catch (e: Exception) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                             cleanupFailedRunArtifacts(cleanupContext)
@@ -206,6 +210,10 @@ class McpHandler(private val state: ServerState) {
                         }
                         val instance = try {
                             state.engine.open(acquireResult.file, acquireResult.options)
+                        } catch (e: OutOfMemoryError) {
+                            state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
+                            cleanupFailedRunArtifacts(cleanupContext)
+                            return memoryExhaustedFailure(toolName, "engine_open")
                         } catch (e: Exception) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                             cleanupFailedRunArtifacts(cleanupContext)
@@ -246,6 +254,9 @@ class McpHandler(private val state: ServerState) {
                                 reason = "analysis_timeout",
                                 message = "Tool execution timed out"
                             )
+                        } catch (e: OutOfMemoryError) {
+                            recoverFromOutOfMemory(instance, entry.hash, cleanupContext)
+                            memoryExhaustedFailure(toolName, "tool_execution")
                         } catch (e: Exception) {
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                             cleanupFailedRunArtifacts(cleanupContext)
@@ -363,6 +374,13 @@ class McpHandler(private val state: ServerState) {
         return memoryPressureFailure(toolName, "reuse existing worker", decision)
     }
 
+    private fun resolveEngineThreads(): Int {
+        if (state.config.engineThreads > 0) {
+            return state.config.engineThreads
+        }
+        return maxOf(2, Runtime.getRuntime().availableProcessors() / 2).coerceAtMost(8)
+    }
+
     private fun refuseForSpawnIfNeeded(toolName: String): CallToolResult? {
         val decision = state.memoryGovernor.allowSpawn()
         if (decision.type != MemoryDecisionType.REFUSE) {
@@ -417,6 +435,40 @@ class McpHandler(private val state: ServerState) {
         )
     }
 
+    private fun recoverFromOutOfMemory(
+        instance: EngineInstance,
+        fileHash: String,
+        cleanupContext: FailedRunCleanupContext,
+    ) {
+        state.fileIndex.updateStatus(fileHash, FileStatus.FAILED)
+        state.enginePool.discard(instance)
+        try {
+            state.engine.close(instance)
+        } catch (_: Throwable) {
+            // The VM is under memory pressure; continue with the smallest possible recovery path.
+        }
+        cleanupFailedRunArtifacts(cleanupContext)
+    }
+
+    private fun memoryExhaustedFailure(toolName: String, stage: String): CallToolResult {
+        val snapshot = state.memoryGovernor.snapshot()
+        logger.error(
+            "Heap exhausted during {} for tool {} (usedRatio={}, headroomMb={})",
+            stage,
+            toolName,
+            "%.3f".format(snapshot.usedRatio),
+            snapshot.headroomBytes / (1024 * 1024),
+        )
+        return buildFailureResult(
+            code = "MEMORY_EXHAUSTED",
+            reason = "java_heap_space",
+            message = "Java heap exhausted during $stage for tool '$toolName' " +
+                "(used_ratio=${"%.3f".format(snapshot.usedRatio)}, " +
+                "headroom_mb=${snapshot.headroomBytes / (1024 * 1024)}). " +
+                "Increase the JVM heap or reduce concurrent JADX instances.",
+        )
+    }
+
     private sealed class AcquireRetryResult {
         data class Success(val result: AcquireResult) : AcquireRetryResult()
         data object Interrupted : AcquireRetryResult()
@@ -468,6 +520,8 @@ class McpHandler(private val state: ServerState) {
                     val actualResult = extractTaskResult(result)
                     state.taskManager.complete(taskId, actualResult)
                 }
+            } catch (e: OutOfMemoryError) {
+                state.taskManager.fail(taskId, "Java heap exhausted while running background task")
             } catch (e: Exception) {
                 state.taskManager.fail(taskId, e.message ?: "Unknown error")
             }
@@ -514,6 +568,16 @@ class McpHandler(private val state: ServerState) {
     }
 
     companion object {
+        private val manifestOnlyTools = setOf(
+            "get_manifest",
+            "get_manifest_summary",
+            "list_manifest_permissions",
+            "list_manifest_components",
+            "search_manifest_components",
+            "list_manifest_intent_filters",
+            "get_manifest_entrypoints"
+        )
+
         fun toCallToolResult(result: ToolResult): CallToolResult = when (result) {
             is ToolResult.Success -> CallToolResult(
                 content = listOf(TextContent(result.data.toString(), null, buildJsonObject { })),

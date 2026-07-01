@@ -25,6 +25,9 @@ class LifecycleMockEngine(
     /** If non-null, [open] throws RuntimeException with this message. */
     var openShouldThrow: String? = null,
 
+    /** If true, [open] simulates JVM heap exhaustion. */
+    var openShouldOutOfMemory: Boolean = false,
+
     /** Health response returned from [health]. */
     var healthResponse: InstanceHealth = InstanceHealth.HEALTHY
 ) : DecompilerEngine {
@@ -52,6 +55,7 @@ class LifecycleMockEngine(
 
     override fun open(file: Path, options: EngineOptions): EngineInstance {
         openCallCount++
+        if (openShouldOutOfMemory) throw OutOfMemoryError("simulated heap exhaustion")
         openShouldThrow?.let { throw RuntimeException(it) }
         if (openDelayMs > 0) Thread.sleep(openDelayMs)
 

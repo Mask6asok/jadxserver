@@ -60,6 +60,34 @@ class ToolRegistryTest {
         assertEquals(ToolWeight.HEAVY, registry.analysisToolWeight("search_resource"), "resource search tool")
         assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("list_classes"), "light tool")
         assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("get_smali"), "smali tool")
+        assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("get_manifest_summary"), "manifest summary tool")
+        assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("list_manifest_permissions"), "manifest permissions tool")
+        assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("list_manifest_components"), "manifest components tool")
+        assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("search_manifest_components"), "manifest component search tool")
+        assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("list_manifest_intent_filters"), "manifest intent filters tool")
+        assertEquals(ToolWeight.LIGHT, registry.analysisToolWeight("get_manifest_entrypoints"), "manifest entrypoints tool")
         assertNull(registry.analysisToolWeight("non_existent_tool"), "unknown tool")
+    }
+
+    @Test
+    fun testToolCatalogIncludesStructuredManifestTools() {
+        val result = registry.executeServer("tool_catalog", buildJsonObject {
+            put("query", JsonPrimitive("manifest"))
+        }, "session1", state)
+
+        assertTrue(result is ToolResult.Success)
+        val tools = result.data["tools"] as? kotlinx.serialization.json.JsonArray
+        assertNotNull(tools)
+        val names = tools.mapNotNull {
+            ((it as? JsonObject)?.get("name") as? JsonPrimitive)?.content
+        }.toSet()
+
+        assertTrue("get_manifest" in names)
+        assertTrue("get_manifest_summary" in names)
+        assertTrue("list_manifest_permissions" in names)
+        assertTrue("list_manifest_components" in names)
+        assertTrue("search_manifest_components" in names)
+        assertTrue("list_manifest_intent_filters" in names)
+        assertTrue("get_manifest_entrypoints" in names)
     }
 }
