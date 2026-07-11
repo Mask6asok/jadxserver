@@ -278,11 +278,29 @@ codex mcp add jadx-server \
 
 #### HTTP 模式
 
-使用 MCP `upload_file` 工具获取上传地址，然后 POST 文件：
+使用 MCP `upload_file` 工具获取上传地址，然后 POST 文件。工具响应会同时给出 Linux/macOS、Windows PowerShell 和 Python `requests` 示例：
+
+Linux / macOS：
 
 ```bash
 curl -X POST http://127.0.0.1:8080/upload \
   -F "file=@your-app.apk"
+```
+
+Windows PowerShell（使用 `curl.exe`，避免调用 PowerShell 的 `curl` / `Invoke-RestMethod` 别名）：
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8080/upload -F "file=@your-app.apk"
+```
+
+Python（需要先安装 `requests`）：
+
+```python
+import requests
+
+with open("your-app.apk", "rb") as file:
+    response = requests.post("http://127.0.0.1:8080/upload", files={"file": file})
+    print(response.json())
 ```
 
 或者直接用 MCP 客户端调用 `upload_file`，服务端会返回完整的上传 URL，用返回的 `file_hash` 调用分析工具。

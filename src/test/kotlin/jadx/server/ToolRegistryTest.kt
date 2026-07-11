@@ -11,6 +11,8 @@ import jadx.server.tools.ToolRegistry.Companion.ToolWeight
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
@@ -43,6 +45,17 @@ class ToolRegistryTest {
         val data = result.data
         assertTrue(data.containsKey("status"))
         assertEquals("healthy", data["status"]?.let { if (it is JsonPrimitive) it.content else null })
+    }
+
+    @Test
+    fun testUploadFileProvidesPlatformSpecificCommands() {
+        val result = registry.executeServer("upload_file", buildJsonObject {}, "session1", state)
+
+        assertTrue(result is ToolResult.Success)
+        val commands = result.data["upload_commands"]!!.jsonObject
+        assertEquals("curl -X POST http://127.0.0.1:8080/upload -F \"file=@your-app.apk\"", commands["linux_macos"]!!.jsonPrimitive.content)
+        assertEquals("curl.exe -X POST http://127.0.0.1:8080/upload -F \"file=@your-app.apk\"", commands["windows_powershell"]!!.jsonPrimitive.content)
+        assertTrue(commands["python_requests"]!!.jsonPrimitive.content.contains("requests.post(\"http://127.0.0.1:8080/upload\""))
     }
 
     @Test

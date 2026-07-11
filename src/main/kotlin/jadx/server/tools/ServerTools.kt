@@ -51,12 +51,24 @@ object ServerTools {
 
     fun uploadFile(args: JsonObject, sessionId: String, state: ServerState): ToolResult {
         val baseUrl = state.config.publicBaseUrl?.trimEnd('/') ?: "http://${state.config.listen}"
+        val uploadUrl = "$baseUrl/upload"
         return ToolResult.success {
-            put("upload_url", JsonPrimitive("$baseUrl/upload"))
+            put("upload_url", JsonPrimitive(uploadUrl))
             put("upload_method", JsonPrimitive("POST"))
             put("content_type", JsonPrimitive("multipart/form-data"))
             put("field_name", JsonPrimitive("file"))
             put("description", JsonPrimitive("Upload an APK/DEX/JAR file via multipart POST to $baseUrl/upload. Response includes file_hash for subsequent tools."))
+            put("upload_commands", buildJsonObject {
+                put("linux_macos", JsonPrimitive("curl -X POST $uploadUrl -F \"file=@your-app.apk\""))
+                put("windows_powershell", JsonPrimitive("curl.exe -X POST $uploadUrl -F \"file=@your-app.apk\""))
+                put("python_requests", JsonPrimitive("""
+                    |import requests
+                    |
+                    |with open("your-app.apk", "rb") as file:
+                    |    response = requests.post("$uploadUrl", files={"file": file})
+                    |    print(response.json())
+                """.trimMargin()))
+            })
         }
     }
 
