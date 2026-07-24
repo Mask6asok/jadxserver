@@ -132,4 +132,15 @@ class AndroidManifestParserTest {
         assertTrue(matches.first().xml.contains("HmsMsgService"))
         assertTrue(matches.first().xml.contains("android:process=\":pushservice\""))
     }
+
+    @Test
+    fun acceptsBomAndWhitespaceBeforeXmlDeclaration() {
+        val manifest = AndroidManifestParser.parse(
+            "\uFEFF \n\t" +
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+                "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"com.example\"/>"
+        )
+
+        assertEquals("com.example", manifest.packageName)
+    }
 }

@@ -18,7 +18,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 - **磁盘源码缓存** — 反编译后的 Java 源码保存到 `uploads/binary/<md5>/project.cache/code/sources/`，全量预热后搜索直接并行扫描磁盘缓存，避免反复撑大 JADX 堆
 - **多格式支持** — 支持 APK、JAR、AAB、XAPK、APKS、APKM、DEX 等，通过 jadx 插件扩展
 
-## 0.1.9 更新摘要
+## 1.0.0 更新摘要
 
 - **Manifest 结构化工具**：新增 `get_manifest_summary`、`list_manifest_permissions`、`list_manifest_components`、`search_manifest_components`、`list_manifest_intent_filters`、`get_manifest_entrypoints`，客户端可以直接查询精确字段，减少拉取完整 Manifest XML 后自行解析的上下文消耗。
 - **搜索性能优化**：`decompile_apk` 会预热 JADX 磁盘源码缓存，`search_code` 和 `search_string` 优先并行扫描缓存源码，降低重复反编译导致的内存峰值。
@@ -176,7 +176,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew shadowJar
 ```
 
-输出：`build/libs/jadx-server-0.1.9-all.jar`（约 30MB）
+输出：`build/libs/jadx-server-1.0.0-all.jar`（约 30MB）
 
 **分发包**（启动脚本 + 独立依赖 JAR）：
 
@@ -191,9 +191,9 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 **通过 fat JAR**：
 
 ```bash
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-0.1.9-all.jar
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-0.1.9-all.jar --xref-mode jadx
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-0.1.9-all.jar --auth-token 'replace-with-a-strong-token'
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.0.0-all.jar
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.0.0-all.jar --xref-mode jadx
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.0.0-all.jar --auth-token 'replace-with-a-strong-token'
 ```
 
 **通过分发脚本**：
@@ -212,13 +212,13 @@ jadx-server --xref-mode jadx
 如果服务监听在 `0.0.0.0` 或经由反向代理暴露，建议同时设置 `--public-base-url`，这样 `upload_file` 返回的上传地址会是客户端可访问的真实地址，而不是 `0.0.0.0`。
 
 ```bash
-java -jar jadx-server-0.1.9-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-1.0.0-all.jar --listen 127.0.0.1:8080
 ```
 
 如需启用 HTTP 认证，启动时传入 token。未传入或传入空值时保持无需认证模式：
 
 ```bash
-java -jar jadx-server-0.1.9-all.jar \
+java -jar jadx-server-1.0.0-all.jar \
   --listen 127.0.0.1:8080 \
   --auth-token 'replace-with-a-strong-token'
 ```
@@ -242,7 +242,7 @@ java -jar jadx-server-0.1.9-all.jar \
 #### OpenCode（HTTP）
 
 ```bash
-java -jar jadx-server-0.1.9-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-1.0.0-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -265,7 +265,7 @@ Codex 当前支持为流式 HTTP MCP 服务单独绑定 bearer token 环境变�
 
 ```bash
 export JADX_SERVER_AUTH_TOKEN='replace-with-a-strong-token'
-java -jar jadx-server-0.1.9-all.jar \
+java -jar jadx-server-1.0.0-all.jar \
   --listen 127.0.0.1:8080 \
   --auth-token "$JADX_SERVER_AUTH_TOKEN"
 
@@ -308,7 +308,7 @@ with open("your-app.apk", "rb") as file:
 如果服务端使用 `--listen 0.0.0.0:<port>` 部署到远程主机或反向代理后面，请务必额外配置：
 
 ```bash
-java -jar jadx-server-0.1.9-all.jar \
+java -jar jadx-server-1.0.0-all.jar \
   --listen 0.0.0.0:19090 \
   --public-base-url https://jadx.example.com
 ```

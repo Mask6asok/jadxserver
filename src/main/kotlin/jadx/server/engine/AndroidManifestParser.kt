@@ -91,7 +91,17 @@ object AndroidManifestParser {
             setFeature("http://xml.org/sax/features/external-parameter-entities", false)
         }
         .newDocumentBuilder()
-        .parse(InputSource(StringReader(xml)))
+        .parse(InputSource(StringReader(xml.removeXmlPreambleWhitespace())))
+
+    /**
+     * JADX exposes decoded resources as strings. In that form a UTF-8 BOM is
+     * represented as U+FEFF instead of being consumed by the XML reader, and
+     * some decoders may also leave whitespace before the XML declaration.
+     * Both are harmless for a decoded manifest but make XML parsers reject the
+     * declaration with "content is not allowed in prolog".
+     */
+    private fun String.removeXmlPreambleWhitespace(): String =
+        trimStart('\uFEFF', ' ', '\t', '\r', '\n')
 
     private fun Element.toApplicationInfo(packageName: String): AndroidApplicationInfo {
         return AndroidApplicationInfo(
