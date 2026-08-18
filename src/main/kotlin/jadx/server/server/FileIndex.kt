@@ -48,8 +48,7 @@ class FileIndex(private val uploadDir: Path? = null) {
      * The original source file is preserved — only an indexed copy is placed in the target directory.
      */
     fun add(file: Path, moveToDir: Path? = null): FileEntry {
-        val bytes = Files.readAllBytes(file)
-        val md5 = computeMd5(bytes)
+        val md5 = computeMd5(file)
         val hash = md5.substring(0, 7)
         val originalName = file.fileName.toString()
         val fileSize = Files.size(file)
@@ -172,9 +171,17 @@ class FileIndex(private val uploadDir: Path? = null) {
             return index
         }
 
-        private fun computeMd5(bytes: ByteArray): String {
+        private fun computeMd5(file: Path): String {
             val digest = MessageDigest.getInstance("MD5")
-            val hashBytes = digest.digest(bytes)
+            val buffer = ByteArray(8 * 1024)
+            Files.newInputStream(file).use { input ->
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            val hashBytes = digest.digest()
             return hashBytes.joinToString("") { "%02x".format(it) }
         }
     }

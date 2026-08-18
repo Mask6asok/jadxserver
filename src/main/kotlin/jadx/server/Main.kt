@@ -39,9 +39,13 @@ fun main(args: Array<String>) {
     var engineThreads = 0
     var idleTimeout = Duration.ofMinutes(5)
     var cleanupInterval = Duration.ofSeconds(10)
+    var memoryCleanupInterval = Duration.ofHours(1)
     var maxCachedApks = -1
     var toolTimeout = Duration.ofMinutes(5)
     var jadxVerbose = false
+    var listFilesRequested = false
+    var listFilesLimit: Int? = null
+    var deleteFilesBeforeDays: Long? = null
 
     var i = 0
     while (i < args.size) {
@@ -56,12 +60,51 @@ fun main(args: Array<String>) {
             "--engine-threads" -> { if (i+1 < args.size) engineThreads = args[i+1].toIntOrNull() ?: 0; i++ }
             "--idle-timeout" -> { if (i+1 < args.size) idleTimeout = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 300); i++ }
             "--cleanup-interval" -> { if (i+1 < args.size) cleanupInterval = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 10); i++ }
+            "--memory-cleanup-interval" -> { if (i+1 < args.size) memoryCleanupInterval = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 3600); i++ }
             "--max-cached-apks" -> { if (i+1 < args.size) maxCachedApks = args[i+1].toIntOrNull() ?: 10; i++ }
             "--tool-timeout" -> { if (i+1 < args.size) toolTimeout = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 300); i++ }
+            "--list-files" -> {
+                listFilesRequested = true
+                val next = args.getOrNull(i + 1)
+                if (next != null && (!next.startsWith("--") || next.toIntOrNull() != null)) {
+                    listFilesLimit = args[i + 1].toIntOrNull()
+                        ?: error("--list-files LIMIT must be a non-negative integer")
+                    i++
+                }
+            }
+            "--delete-files-before" -> {
+                if (i + 1 >= args.size || args[i + 1].startsWith("--")) {
+                    error("--delete-files-before requires DAYS")
+                }
+                deleteFilesBeforeDays = args[i + 1].toLongOrNull()
+                    ?: error("--delete-files-before DAYS must be a non-negative integer")
+                i++
+            }
             "--jadx-verbose" -> jadxVerbose = true
             "--help", "-h" -> { printHelp(); return }
         }
         i++
+    }
+
+    if (listFilesRequested && deleteFilesBeforeDays != null) {
+        error("--list-files and --delete-files-before cannot be used together")
+    }
+    if (listFilesRequested || deleteFilesBeforeDays != null) {
+        val uploadDir = Path.of(upload)
+        val fileIndex = jadx.server.server.FileIndex.loadFromUploadDir(uploadDir)
+        if (listFilesRequested) {
+            print(formatFileList(sortedFileList(fileIndex, listFilesLimit)))
+        } else {
+            val days = deleteFilesBeforeDays!!
+            require(days >= 0) { "--delete-files-before DAYS must be non-negative" }
+            val summary = deleteFilesBefore(fileIndex, uploadDir, days)
+            println("Deleted ${summary.deleted} file(s) older than $days day(s).")
+            if (summary.failed.isNotEmpty()) {
+                println("Failed to delete:")
+                summary.failed.forEach(::println)
+            }
+        }
+        return
     }
 
     if (jadxVerbose) {
@@ -79,6 +122,7 @@ fun main(args: Array<String>) {
         engineThreads = engineThreads,
         idleTimeout = idleTimeout,
         cleanupInterval = cleanupInterval,
+        memoryCleanupInterval = memoryCleanupInterval,
         maxCachedApks = maxCachedApks,
         uploadDir = Path.of(upload),
         toolTimeout = toolTimeout,
@@ -117,14 +161,22 @@ fun startHttpServer(config: ServerConfig, state: ServerState) {
                     val part = multipart.readPart() ?: break
                     when (part) {
                         is PartData.FileItem -> {
-                            val fileName = part.originalFileName ?: "unknown.apk"
-                            val tmpDir = state.config.uploadDir.resolve("tmp")
-                            Files.createDirectories(tmpDir)
-                            val tmpFile = tmpDir.resolve(fileName)
-                            part.streamProvider().use { input ->
-                                Files.copy(input, tmpFile, StandardCopyOption.REPLACE_EXISTING)
+                            val fileName = runCatching {
+                                Path.of(part.originalFileName ?: "unknown.apk").fileName.toString()
+                            }.getOrDefault("unknown.apk").ifBlank { "unknown.apk" }
+                            val tmpRoot = state.config.uploadDir.resolve("tmp")
+                            Files.createDirectories(tmpRoot)
+                            val requestDir = Files.createTempDirectory(tmpRoot, "upload-")
+                            val tmpFile = requestDir.resolve(fileName)
+                            try {
+                                part.streamProvider().use { input ->
+                                    Files.copy(input, tmpFile, StandardCopyOption.REPLACE_EXISTING)
+                                }
+                                fileEntry = state.fileIndex.add(tmpFile, state.config.uploadDir)
+                            } finally {
+                                Files.deleteIfExists(tmpFile)
+                                Files.deleteIfExists(requestDir)
                             }
-                            fileEntry = state.fileIndex.add(tmpFile, state.config.uploadDir)
                         }
                         else -> part.dispose()
                     }
@@ -172,10 +224,13 @@ fun printHelp() {
           --engine-threads <n>       JADX worker threads per engine, 0=auto(min(CPU/2, 8))
           --idle-timeout <s>         Idle engine eviction timeout in seconds (default: 300)
           --cleanup-interval <s>     Eviction check interval in seconds (default: 10)
+          --memory-cleanup-interval <s>  Deep memory cleanup interval in seconds (default: 3600, 0=disabled)
           --max-cached-apks <n>      Max cached APK entries (default: 10)
           --upload-dir <path>        Upload directory (default: ./uploads)
           --tool-timeout <s>         Tool execution timeout in seconds (default: 300)
           --xref-mode <mode>         Cross-reference mode: text, jadx (default: jadx)
+          --list-files [limit]       Print indexed files newest first and exit (default: all)
+          --delete-files-before <d>  Delete old analyzed/failed files and exit
           --jadx-verbose             Enable jadx.core library logging (default: OFF)
           --help, -h                 Show this help
 

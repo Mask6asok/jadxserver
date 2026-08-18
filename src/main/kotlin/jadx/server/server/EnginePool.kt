@@ -28,7 +28,11 @@ data class PoolEntry(
 
 sealed class AcquireResult {
     data class Found(val instance: EngineInstance) : AcquireResult()
-    data class NeedSpawn(val file: Path, val options: EngineOptions) : AcquireResult()
+    data class NeedSpawn(
+        val file: Path,
+        val options: EngineOptions,
+        val reclaimedInstance: EngineInstance? = null,
+    ) : AcquireResult()
     data object Busy : AcquireResult()
     data object Full : AcquireResult()
 }
@@ -57,10 +61,20 @@ class EnginePool(
     private val lock = ReentrantLock()
     private val pool = mutableMapOf<PoolKey, MutableList<PoolEntry>>()
     private val instanceToKey = mutableMapOf<String, PoolKey>()
+    private var maintenanceInProgress = false
+    /**
+     * Reservations for engine opens that have been admitted but have not yet
+     * reached [insert]. The open happens outside [lock], so counting only
+     * [instanceToKey] would let concurrent callers overcommit the pool.
+     */
+    private val pendingSpawns = mutableMapOf<PoolKey, Int>()
 
     fun acquire(sessionId: String, fileHash: String, options: EngineOptions): AcquireResult {
         lock.lock()
         try {
+            if (maintenanceInProgress) {
+                return AcquireResult.Busy
+            }
             val key = PoolKey(sessionId, fileHash)
             val entries = pool[key]
 
@@ -78,20 +92,23 @@ class EnginePool(
                 return AcquireResult.Found(adoptedEntry.instance)
             }
 
-            if (entries != null && entries.size >= config.maxPerFile) {
+            val pendingForKey = pendingSpawns[key] ?: 0
+            if ((entries?.size ?: 0) + pendingForKey >= config.maxPerFile) {
                 return AcquireResult.Busy
-            }
-
-            val totalInstances = instanceToKey.size
-            if (totalInstances >= config.maxTotal) {
-                return AcquireResult.Full
             }
 
             val fileEntry = fileIndex.resolve(fileHash)
                 ?: return AcquireResult.Full
             val filePath = Path.of(fileEntry.path)
 
-            return AcquireResult.NeedSpawn(filePath, options)
+            val totalInstances = instanceToKey.size + pendingSpawns.values.sum()
+            val reclaimedInstance = if (totalInstances >= config.maxTotal) {
+                detachIdleInstanceForReclaim(key) ?: return AcquireResult.Full
+            } else {
+                null
+            }
+            pendingSpawns[key] = pendingForKey + 1
+            return AcquireResult.NeedSpawn(filePath, options, reclaimedInstance)
         } finally {
             lock.unlock()
         }
@@ -101,6 +118,7 @@ class EnginePool(
         lock.lock()
         try {
             val key = PoolKey(sessionId, fileHash)
+            releaseSpawnReservation(key)
             val entries = pool.getOrPut(key) { mutableListOf() }
             entries.add(
                 PoolEntry(
@@ -110,6 +128,16 @@ class EnginePool(
                 )
             )
             instanceToKey[instance.instanceId] = key
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /** Release a spawn reservation when opening the engine failed or was refused. */
+    fun cancelSpawn(sessionId: String, fileHash: String) {
+        lock.lock()
+        try {
+            releaseSpawnReservation(PoolKey(sessionId, fileHash))
         } finally {
             lock.unlock()
         }
@@ -198,6 +226,48 @@ class EnginePool(
         }
     }
 
+    /**
+     * Atomically reserve the pool for a maintenance window and detach every
+     * idle instance.  The returned instances must be closed by the caller and
+     * [endMemoryCleanup] must always be called afterwards.
+     *
+     * A null result means that an analysis lease or an engine open is active.
+     * The check and detach happen under the same lock, so no busy/pending entry
+     * can be missed between the two operations.
+     */
+    fun beginMemoryCleanup(): List<EngineInstance>? {
+        lock.lock()
+        try {
+            if (maintenanceInProgress || pendingSpawns.isNotEmpty() || pool.values.any { entries ->
+                    entries.any { it.state == PoolState.Busy }
+                }) {
+                return null
+            }
+
+            maintenanceInProgress = true
+            val detached = pool.values
+                .asSequence()
+                .flatMap { it.asSequence() }
+                .filter { it.state == PoolState.Idle }
+                .map { it.instance }
+                .toList()
+            pool.clear()
+            instanceToKey.clear()
+            return detached
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun endMemoryCleanup() {
+        lock.lock()
+        try {
+            maintenanceInProgress = false
+        } finally {
+            lock.unlock()
+        }
+    }
+
     fun listInstances(): List<InstanceInfo> {
         lock.lock()
         try {
@@ -271,5 +341,38 @@ class EnginePool(
         val key = instanceToKey[instance.instanceId] ?: return null
         val entries = pool[key] ?: return null
         return entries.find { it.instance.instanceId == instance.instanceId }
+    }
+
+    private fun detachIdleInstanceForReclaim(targetKey: PoolKey): EngineInstance? {
+        var reclaimKey: PoolKey? = null
+        var reclaimEntry: PoolEntry? = null
+        for ((candidateKey, entries) in pool) {
+            if (candidateKey.fileHash == targetKey.fileHash) {
+                continue
+            }
+            val idleEntry = entries.firstOrNull { it.state == PoolState.Idle } ?: continue
+            reclaimKey = candidateKey
+            reclaimEntry = idleEntry
+            break
+        }
+
+        val key = reclaimKey ?: return null
+        val entries = pool[key] ?: return null
+        val entry = reclaimEntry ?: return null
+        entries.remove(entry)
+        instanceToKey.remove(entry.instance.instanceId)
+        if (entries.isEmpty()) {
+            pool.remove(key)
+        }
+        return entry.instance
+    }
+
+    private fun releaseSpawnReservation(key: PoolKey) {
+        val pending = pendingSpawns[key] ?: return
+        if (pending <= 1) {
+            pendingSpawns.remove(key)
+        } else {
+            pendingSpawns[key] = pending - 1
+        }
     }
 }

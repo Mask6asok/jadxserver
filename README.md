@@ -14,16 +14,19 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 - **后台任务** — 长时间反编译在虚拟线程上执行，客户端可轮询结果
 - **空闲驱逐** — 按配置自动清理空闲引擎实例
 - **文件索引** — 基于 MD5 的文件追踪，JSON 持久化，重启不丢
+- **索引维护 CLI** — 可在不启动 HTTP 服务的情况下列出或按时间清理文件
 - **零拷贝访问** — 直接引用 jadx 内存中的类元数据，结构查询不落地中间文件
 - **磁盘源码缓存** — 反编译后的 Java 源码保存到 `uploads/binary/<md5>/project.cache/code/sources/`，全量预热后搜索直接并行扫描磁盘缓存，避免反复撑大 JADX 堆
 - **多格式支持** — 支持 APK、JAR、AAB、XAPK、APKS、APKM、DEX 等，通过 jadx 插件扩展
 
-## 1.0.0 更新摘要
+## 1.1.0 更新摘要
 
 - **Manifest 结构化工具**：新增 `get_manifest_summary`、`list_manifest_permissions`、`list_manifest_components`、`search_manifest_components`、`list_manifest_intent_filters`、`get_manifest_entrypoints`，客户端可以直接查询精确字段，减少拉取完整 Manifest XML 后自行解析的上下文消耗。
 - **搜索性能优化**：`decompile_apk` 会预热 JADX 磁盘源码缓存，`search_code` 和 `search_string` 优先并行扫描缓存源码，降低重复反编译导致的内存峰值。
 - **8GB 运行配置**：默认 JVM 参数改为 `-Xmx8G`，低堆配置下自动收敛引擎实例数量；新增 `--engine-threads`，默认按 CPU 自动选择线程数，也可以显式提高 CPU 并行度。
 - **缓存可观测性**：`decompile_apk` 返回 `code_cache` 状态、耗时和缓存文件数量，便于判断搜索是否已进入缓存路径。
+- **内存自动清理**：服务默认每小时在无分析任务时清理空闲引擎和 JVM 堆，降低长期运行的内存占用。
+- **文件维护 CLI**：新增 `--list-files [LIMIT]` 和 `--delete-files-before DAYS` 一次性维护命令，执行后直接退出且不启动服务。
 
 ## 架构
 
@@ -176,7 +179,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew shadowJar
 ```
 
-输出：`build/libs/jadx-server-1.0.0-all.jar`（约 30MB）
+输出：`build/libs/jadx-server-1.1.0-all.jar`（约 30MB）
 
 **分发包**（启动脚本 + 独立依赖 JAR）：
 
@@ -191,9 +194,9 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 **通过 fat JAR**：
 
 ```bash
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.0.0-all.jar
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.0.0-all.jar --xref-mode jadx
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.0.0-all.jar --auth-token 'replace-with-a-strong-token'
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.1.0-all.jar
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.1.0-all.jar --xref-mode jadx
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.1.0-all.jar --auth-token 'replace-with-a-strong-token'
 ```
 
 **通过分发脚本**：
@@ -212,13 +215,13 @@ jadx-server --xref-mode jadx
 如果服务监听在 `0.0.0.0` 或经由反向代理暴露，建议同时设置 `--public-base-url`，这样 `upload_file` 返回的上传地址会是客户端可访问的真实地址，而不是 `0.0.0.0`。
 
 ```bash
-java -jar jadx-server-1.0.0-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-1.1.0-all.jar --listen 127.0.0.1:8080
 ```
 
 如需启用 HTTP 认证，启动时传入 token。未传入或传入空值时保持无需认证模式：
 
 ```bash
-java -jar jadx-server-1.0.0-all.jar \
+java -jar jadx-server-1.1.0-all.jar \
   --listen 127.0.0.1:8080 \
   --auth-token 'replace-with-a-strong-token'
 ```
@@ -242,7 +245,7 @@ java -jar jadx-server-1.0.0-all.jar \
 #### OpenCode（HTTP）
 
 ```bash
-java -jar jadx-server-1.0.0-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-1.1.0-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -265,7 +268,7 @@ Codex 当前支持为流式 HTTP MCP 服务单独绑定 bearer token 环境变�
 
 ```bash
 export JADX_SERVER_AUTH_TOKEN='replace-with-a-strong-token'
-java -jar jadx-server-1.0.0-all.jar \
+java -jar jadx-server-1.1.0-all.jar \
   --listen 127.0.0.1:8080 \
   --auth-token "$JADX_SERVER_AUTH_TOKEN"
 
@@ -308,7 +311,7 @@ with open("your-app.apk", "rb") as file:
 如果服务端使用 `--listen 0.0.0.0:<port>` 部署到远程主机或反向代理后面，请务必额外配置：
 
 ```bash
-java -jar jadx-server-1.0.0-all.jar \
+java -jar jadx-server-1.1.0-all.jar \
   --listen 0.0.0.0:19090 \
   --public-base-url https://jadx.example.com
 ```
@@ -346,10 +349,27 @@ Authorization: Bearer <token>  # 仅在服务端配置了 token 时需要
 | `engineThreads` | `--engine-threads` | `0`（自动） | 单个 JADX 引擎的反编译/搜索线程数；0 = `min(CPU/2, 8)` |
 | `idleTimeout` | `--idle-timeout` | `300s`（5 分钟） | 空闲实例驱逐超时 |
 | `cleanupInterval` | `--cleanup-interval` | `10s` | 驱逐检查间隔 |
+| `memoryCleanupInterval` | `--memory-cleanup-interval` | `3600s`（1 小时） | 无分析活动时的深度内存清理间隔；`0` 禁用 |
 | `maxCachedApks` | `--max-cached-apks` | `10` | 最大缓存 APK/JAR 元数据条目数 |
 | `uploadDir` | `--upload-dir` | `./uploads` | APK/JAR 二进制上传目录 |
 | `toolTimeout` | `--tool-timeout` | `300s`（5 分钟） | MCP 工具执行超时 |
 | `xrefMode` | `--xref-mode` | `JADX` | 交叉引用模式：`TEXT`（字符串匹配）或 `JADX`（字节码分析） |
+
+### 一次性文件维护命令
+
+以下两个参数执行完成后会直接退出，不会启动 MCP/HTTP 服务。文件时间使用索引中的 `storedAt`（上传/登记时间），显示为东八区（UTC+8），并按最新到最旧排序。
+
+```bash
+# 列出全部文件
+jadx-server --upload-dir ./uploads --list-files
+# 可选 LIMIT：只显示最新的 N 个
+jadx-server --upload-dir ./uploads --list-files 20
+
+# 删除 DAYS 天之前的 analyzed/failed 文件
+jadx-server --upload-dir ./uploads --delete-files-before DAYS
+```
+
+`--delete-files-before` 只删除状态为 `analyzed` 或 `failed` 的条目及其 upload 目录内的二进制、项目文件和缓存目录；`uploaded` 与 `analyzing` 条目始终保留。两个一次性参数不能同时使用。
 
 ### 交叉引用模式
 
@@ -368,6 +388,7 @@ data class ServerConfig(
     val maxPerFile: Int = 4,
     val idleTimeout: Duration = Duration.ofMinutes(5),
     val cleanupInterval: Duration = Duration.ofSeconds(10),
+    val memoryCleanupInterval: Duration = Duration.ofHours(1),
     val maxCachedApks: Int = 10,
     val uploadDir: Path = Path.of("./uploads"),
     val toolTimeout: Duration = Duration.ofMinutes(5),
@@ -385,7 +406,7 @@ data class ServerConfig(
 
 4. **分析** — 客户端调用分析工具（`get_class_code`、`search_code`、`class_xrefs` 等）并传入文件哈希。源码采用按需生成：首次访问某个类时才会将该类代码写入 `project.cache/code/sources/`，而不是在打开 APK 时全量导出全部源码。代码搜索采用与 `jadx-gui` 类似的类级搜索路径：优先命中 code cache，未命中时才按需生成该类代码。`JADX` 模式的 xref 查询结果会额外缓存到 `project.cache/code/usage/`，以便后续查询复用。引擎池优先复用当前会话已有实例；若同一 `file_hash` 在其他会话上存在空闲实例，也会直接接管复用，无需重新反编译。
 
-5. **驱逐** — 空闲实例在配置的超时后自动关闭，释放 JVM 堆内存。文件索引以及 `project.jadx` 路径在重启后持久化保留。
+5. **驱逐与深度清理** — 空闲实例在配置的超时后自动关闭，释放 JVM 堆内存；默认每小时在没有分析活动时关闭所有剩余空闲实例并统一触发一次 GC。若清理时仍有分析或引擎正在打开，则本轮跳过并在下一次巡检重试。文件索引以及 `project.jadx` 路径在重启后持久化保留。
 
 ## 技术栈
 

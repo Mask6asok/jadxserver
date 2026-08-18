@@ -16,6 +16,7 @@ class ServerState(
     val enginePool: EnginePool
     val sessionManager = SessionManager()
     val taskManager = TaskManager()
+    val analysisActivity = AnalysisActivityCoordinator()
     val idleEvictor: IdleEvictor
     val startedAt: Instant = Instant.now()
 
@@ -36,13 +37,41 @@ class ServerState(
             idleTimeout = config.idleTimeout
         )
         enginePool = EnginePool(poolConfig, engine, fileIndex)
-        idleEvictor = IdleEvictor(enginePool, engine, memoryGovernor, config.idleTimeout, config.cleanupInterval, taskManager, fileIndex)
+        idleEvictor = IdleEvictor(
+            enginePool = enginePool,
+            engine = engine,
+            memoryGovernor = memoryGovernor,
+            idleTimeout = config.idleTimeout,
+            cleanupInterval = config.cleanupInterval,
+            memoryCleanupInterval = config.memoryCleanupInterval,
+            taskManager = taskManager,
+            fileIndex = fileIndex,
+            analysisActivity = analysisActivity,
+        )
         idleEvictor.start()
     }
 
     fun shutdown() {
         idleEvictor.shutdown()
-        enginePool.evict(Duration.ZERO).forEach { engine.close(it) }
+        analysisActivity.withMaintenance {
+            val detached = enginePool.beginMemoryCleanup()
+            if (detached != null) {
+                try {
+                    detached.forEach { engine.closeWithoutGc(it) }
+                    if (detached.isNotEmpty()) {
+                        System.gc()
+                    }
+                } finally {
+                    enginePool.endMemoryCleanup()
+                }
+            } else {
+                val evicted = enginePool.evict(Duration.ZERO)
+                evicted.forEach { engine.closeWithoutGc(it) }
+                if (evicted.isNotEmpty()) {
+                    System.gc()
+                }
+            }
+        }
         fileIndex.persist(config.uploadDir)
     }
 

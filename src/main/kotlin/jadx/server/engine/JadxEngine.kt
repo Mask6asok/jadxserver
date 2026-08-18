@@ -226,11 +226,21 @@ class JadxEngine : DecompilerEngine {
     }
 
     override fun close(instance: EngineInstance) {
+        closeResources(instance, collectGarbage = true)
+    }
+
+    override fun closeWithoutGc(instance: EngineInstance) {
+        closeResources(instance, collectGarbage = false)
+    }
+
+    private fun closeResources(instance: EngineInstance, collectGarbage: Boolean) {
         val apk = instance.state as? DecompiledApk
         apk?.close()
-        // Prompt GC after closing engine instance — jadx produces massive
-        // temporary objects during decompilation that G1GC may not reclaim promptly.
-        System.gc()
+        if (collectGarbage) {
+            // Prompt GC after closing engine instance — jadx produces massive
+            // temporary objects during decompilation that G1GC may not reclaim promptly.
+            System.gc()
+        }
     }
 
     override fun unload(instance: EngineInstance): Boolean {

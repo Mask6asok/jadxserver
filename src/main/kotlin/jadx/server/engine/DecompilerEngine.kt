@@ -12,6 +12,8 @@ interface DecompilerEngine {
     fun open(file: Path, options: EngineOptions): EngineInstance
     fun unload(instance: EngineInstance): Boolean
     fun close(instance: EngineInstance)
+    /** Close an instance without forcing a GC; callers can batch a single GC. */
+    fun closeWithoutGc(instance: EngineInstance) = close(instance)
     fun health(instance: EngineInstance): InstanceHealth
 }
 

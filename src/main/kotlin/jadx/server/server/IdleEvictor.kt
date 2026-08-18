@@ -8,6 +8,7 @@ import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 
 class IdleEvictor(
     private val enginePool: EnginePool,
@@ -16,7 +17,11 @@ class IdleEvictor(
     private val idleTimeout: Duration,
     private val cleanupInterval: Duration,
     private val taskManager: TaskManager,
-    private val fileIndex: FileIndex
+    private val fileIndex: FileIndex,
+    private val memoryCleanupInterval: Duration = Duration.ofHours(1),
+    private val analysisActivity: AnalysisActivityCoordinator = AnalysisActivityCoordinator(),
+    private val gcAction: () -> Unit = { System.gc() },
+    private val now: () -> Instant = Instant::now,
 ) {
     companion object {
         private val UNLOAD_IDLE_THRESHOLD: Duration = Duration.ofSeconds(60)
@@ -24,16 +29,58 @@ class IdleEvictor(
     }
 
     private val logger = LoggerFactory.getLogger(IdleEvictor::class.java)
+    private val lifecycleLock = ReentrantLock()
     private var scheduler: ScheduledExecutorService? = null
+    private var shuttingDown = false
+    private var nextMemoryCleanupAt: Instant? = null
+
+    init {
+        require(!cleanupInterval.isNegative && !cleanupInterval.isZero) {
+            "cleanupInterval must be greater than zero"
+        }
+        require(!memoryCleanupInterval.isNegative) {
+            "memoryCleanupInterval must be zero or greater"
+        }
+    }
 
     fun start() {
-        val exec = Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "idle-evictor").apply { isDaemon = true }
+        lifecycleLock.lock()
+        try {
+            if (scheduler != null) {
+                return
+            }
+            shuttingDown = false
+            val exec = Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "idle-evictor").apply { isDaemon = true }
+            }
+            scheduler = exec
+            nextMemoryCleanupAt = if (memoryCleanupInterval.isZero) {
+                null
+            } else {
+                now().plusMillis(memoryCleanupInterval.toMillis())
+            }
+            val intervalMs = cleanupInterval.toMillis().coerceAtLeast(1L)
+            exec.scheduleAtFixedRate(::runCycle, intervalMs, intervalMs, TimeUnit.MILLISECONDS)
+            logger.info(
+                "IdleEvictor started: interval={}s, timeout={}s, memoryCleanupInterval={}s",
+                cleanupInterval.toSeconds(),
+                idleTimeout.toSeconds(),
+                memoryCleanupInterval.toSeconds(),
+            )
+        } finally {
+            lifecycleLock.unlock()
         }
-        scheduler = exec
-        val intervalMs = cleanupInterval.toMillis()
-        exec.scheduleAtFixedRate(::evict, intervalMs, intervalMs, TimeUnit.MILLISECONDS)
-        logger.info("IdleEvictor started: interval={}s, timeout={}s", cleanupInterval.toSeconds(), idleTimeout.toSeconds())
+    }
+
+    private fun runCycle() {
+        lifecycleLock.lock()
+        try {
+            if (!shuttingDown) {
+                evict()
+            }
+        } finally {
+            lifecycleLock.unlock()
+        }
     }
 
     private fun evict() {
@@ -45,25 +92,100 @@ class IdleEvictor(
                 logger.info("Evicting {} idle engine instance(s)", evicted.size)
                 for (instance in evicted) {
                     try {
-                        engine.close(instance)
+                        engine.closeWithoutGc(instance)
                         logger.debug("Closed evicted instance: {}", instance.instanceId)
                     } catch (e: Exception) {
                         logger.warn("Error closing evicted instance {}: {}", instance.instanceId, e.message)
                     }
                 }
                 // Batch eviction frees large jadx heaps; prompt GC to return memory to OS
-                System.gc()
+                gcAction()
             }
 
             taskManager.pruneOld()
             fileIndex.enforceMaxEntries()
+            runDueMemoryCleanup()
         } catch (e: Exception) {
             logger.error("Error during eviction cycle: {}", e.message, e)
         }
     }
 
     internal fun runOnceForTest() {
-        evict()
+        lifecycleLock.lock()
+        try {
+            if (!shuttingDown) {
+                evict()
+            }
+        } finally {
+            lifecycleLock.unlock()
+        }
+    }
+
+    internal fun runMemoryCleanupOnceForTest(): Boolean {
+        lifecycleLock.lock()
+        try {
+            if (shuttingDown) {
+                return false
+            }
+            return runMemoryCleanup()
+        } finally {
+            lifecycleLock.unlock()
+        }
+    }
+
+    private fun runDueMemoryCleanup() {
+        val dueAt = nextMemoryCleanupAt ?: return
+        val current = now()
+        if (current.isBefore(dueAt)) {
+            return
+        }
+        if (runMemoryCleanup()) {
+            nextMemoryCleanupAt = current.plus(memoryCleanupInterval)
+        }
+    }
+
+    private fun runMemoryCleanup(): Boolean {
+        val maintenanceLease = analysisActivity.tryEnterMaintenance()
+        if (maintenanceLease == null) {
+            logger.debug("Skipping periodic memory cleanup: analysis activity is still running")
+            return false
+        }
+
+        try {
+            val detached = enginePool.beginMemoryCleanup()
+            if (detached == null) {
+                logger.debug("Skipping periodic memory cleanup: engine pool is busy or opening an instance")
+                return false
+            }
+
+            val before = memoryGovernor.snapshot()
+            try {
+                logger.info("Starting periodic memory cleanup: {} idle engine instance(s)", detached.size)
+                for (instance in detached) {
+                    try {
+                        engine.closeWithoutGc(instance)
+                        logger.debug("Closed memory-cleanup instance: {}", instance.instanceId)
+                    } catch (e: Exception) {
+                        logger.warn("Error closing memory-cleanup instance {}: {}", instance.instanceId, e.message)
+                    }
+                }
+                gcAction()
+                val after = memoryGovernor.snapshot()
+                logger.info(
+                    "Periodic memory cleanup completed: closed={}, heapUsedMb={} -> {}, heapCommittedMb={} -> {}",
+                    detached.size,
+                    before.usedBytes / (1024 * 1024),
+                    after.usedBytes / (1024 * 1024),
+                    before.totalBytes / (1024 * 1024),
+                    after.totalBytes / (1024 * 1024),
+                )
+                return true
+            } finally {
+                enginePool.endMemoryCleanup()
+            }
+        } finally {
+            maintenanceLease.close()
+        }
     }
 
     private fun unloadEligibleIdleInstances() {
@@ -121,13 +243,26 @@ class IdleEvictor(
     }
 
     fun shutdown() {
-        scheduler?.shutdown()
+        val exec: ScheduledExecutorService
+        lifecycleLock.lock()
         try {
-            scheduler?.awaitTermination(5, TimeUnit.SECONDS)
+            val current = scheduler
+            if (current == null) {
+                return
+            }
+            shuttingDown = true
+            exec = current
+            scheduler = null
+            nextMemoryCleanupAt = null
+        } finally {
+            lifecycleLock.unlock()
+        }
+        exec.shutdown()
+        try {
+            exec.awaitTermination(5, TimeUnit.SECONDS)
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }
-        scheduler = null
         logger.info("IdleEvictor shut down")
     }
 }

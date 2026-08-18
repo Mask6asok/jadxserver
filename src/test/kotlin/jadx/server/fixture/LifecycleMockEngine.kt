@@ -29,7 +29,10 @@ class LifecycleMockEngine(
     var openShouldOutOfMemory: Boolean = false,
 
     /** Health response returned from [health]. */
-    var healthResponse: InstanceHealth = InstanceHealth.HEALTHY
+    var healthResponse: InstanceHealth = InstanceHealth.HEALTHY,
+
+    /** Optional hook used by lifecycle tests to observe close-time coordination. */
+    var closeAction: ((EngineInstance) -> Unit)? = null
 ) : DecompilerEngine {
 
     override val name: String = "lifecycle-mock"
@@ -68,6 +71,7 @@ class LifecycleMockEngine(
 
     override fun close(instance: EngineInstance) {
         closeCallCount++
+        closeAction?.invoke(instance)
     }
 
     override fun unload(instance: EngineInstance): Boolean {
@@ -81,6 +85,7 @@ class LifecycleMockEngine(
         openCallCount = 0
         closeCallCount = 0
         unloadCallCount = 0
+        closeAction = null
     }
 }
 

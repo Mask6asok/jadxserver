@@ -39,7 +39,7 @@ class McpHandler(private val state: ServerState) {
 
     fun createServer(): Server {
         val server = Server(
-            Implementation(name = "jadx-server", version = "1.0.0"),
+            Implementation(name = "jadx-server", version = "1.1.0"),
             ServerOptions(
                 capabilities = ServerCapabilities(
                     tools = ServerCapabilities.Tools(listChanged = true)
@@ -93,6 +93,15 @@ class McpHandler(private val state: ServerState) {
     }
 
     private fun handleSyncAnalysis(
+        toolName: String,
+        fileHash: String,
+        args: JsonObject,
+        sessionId: String
+    ): CallToolResult = state.analysisActivity.withAnalysis {
+        handleSyncAnalysisUnderLease(toolName, fileHash, args, sessionId)
+    }
+
+    private fun handleSyncAnalysisUnderLease(
         toolName: String,
         fileHash: String,
         args: JsonObject,
@@ -203,7 +212,14 @@ class McpHandler(private val state: ServerState) {
                         }
                     }
                     is AcquireResult.NeedSpawn -> {
+                        try {
+                            closeReclaimedInstance(acquireResult.reclaimedInstance)
+                        } catch (t: Throwable) {
+                            state.enginePool.cancelSpawn(sessionId, fileHash)
+                            throw t
+                        }
                         refuseForSpawnIfNeeded(toolName)?.let {
+                            state.enginePool.cancelSpawn(sessionId, fileHash)
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                             cleanupFailedRunArtifacts(cleanupContext)
                             return it
@@ -211,10 +227,12 @@ class McpHandler(private val state: ServerState) {
                         val instance = try {
                             state.engine.open(acquireResult.file, acquireResult.options)
                         } catch (e: OutOfMemoryError) {
+                            state.enginePool.cancelSpawn(sessionId, fileHash)
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                             cleanupFailedRunArtifacts(cleanupContext)
                             return memoryExhaustedFailure(toolName, "engine_open")
                         } catch (e: Exception) {
+                            state.enginePool.cancelSpawn(sessionId, fileHash)
                             state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                             cleanupFailedRunArtifacts(cleanupContext)
                             return buildFailureResult(
@@ -222,6 +240,9 @@ class McpHandler(private val state: ServerState) {
                                 reason = "engine_open_failed",
                                 message = "Failed to open decompiler: ${e.message}"
                             )
+                        } catch (t: Throwable) {
+                            state.enginePool.cancelSpawn(sessionId, fileHash)
+                            throw t
                         }
                         if (projectFile == null && sourceDir != null) {
                             val generatedProjectFile = binaryDir.resolve("project.jadx")
@@ -381,6 +402,17 @@ class McpHandler(private val state: ServerState) {
         return maxOf(2, Runtime.getRuntime().availableProcessors() / 2).coerceAtMost(8)
     }
 
+    private fun closeReclaimedInstance(instance: EngineInstance?) {
+        if (instance == null) {
+            return
+        }
+        try {
+            state.engine.close(instance)
+        } catch (e: Exception) {
+            logger.warn("Failed to close reclaimed engine instance {}: {}", instance.instanceId, e.message)
+        }
+    }
+
     private fun refuseForSpawnIfNeeded(toolName: String): CallToolResult? {
         val decision = state.memoryGovernor.allowSpawn()
         if (decision.type != MemoryDecisionType.REFUSE) {
@@ -479,14 +511,14 @@ class McpHandler(private val state: ServerState) {
         sessionId: String,
         fileHash: String,
         options: EngineOptions,
-        maxRetries: Int = 60,
+        maxRetries: Int = 300,
         retryDelayMs: Long = 100
     ): AcquireRetryResult {
         for (i in 0 until maxRetries) {
             when (val result = state.enginePool.acquire(sessionId, fileHash, options)) {
-                is AcquireResult.Found, is AcquireResult.NeedSpawn, is AcquireResult.Full ->
+                is AcquireResult.Found, is AcquireResult.NeedSpawn ->
                     return AcquireRetryResult.Success(result)
-                is AcquireResult.Busy -> {
+                is AcquireResult.Busy, is AcquireResult.Full -> {
                     try { Thread.sleep(retryDelayMs) } catch (_: InterruptedException) {
                         return AcquireRetryResult.Interrupted
                     }
