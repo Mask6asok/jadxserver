@@ -27,7 +27,10 @@ object ServerTools {
     private val projectService = JadxProjectService()
 
     fun definitions(): List<McpToolDef> = listOf(
-        McpToolDef("upload_file", "Get upload URL and instructions for uploading a binary file"),
+        McpToolDef(
+            "upload_file",
+            "Get upload URL and instructions for uploading a binary file; after upload, immediately call decompile_apk with the returned file_hash"
+        ),
         McpToolDef("save_project", "Generate or refresh upstream-compatible project.jadx for a file")
             .param("file_hash", "string", "Short hash or MD5 prefix of the uploaded file", true),
         McpToolDef("list_files", "List known binaries (uploaded or previously opened)")
@@ -57,7 +60,18 @@ object ServerTools {
             put("upload_method", JsonPrimitive("POST"))
             put("content_type", JsonPrimitive("multipart/form-data"))
             put("field_name", JsonPrimitive("file"))
-            put("description", JsonPrimitive("Upload an APK/DEX/JAR file via multipart POST to $baseUrl/upload. Response includes file_hash for subsequent tools."))
+            put(
+                "description",
+                JsonPrimitive(
+                    "Upload an APK/DEX/JAR file via multipart POST to $baseUrl/upload. " +
+                        "After the upload succeeds, immediately call decompile_apk with the returned file_hash before calling any other analysis tool."
+                )
+            )
+            put("next_tool", JsonPrimitive("decompile_apk"))
+            put(
+                "next_step",
+                JsonPrimitive("After upload succeeds, call decompile_apk(file_hash=<file_hash from the upload response>) immediately.")
+            )
             put("upload_commands", buildJsonObject {
                 put("linux_macos", JsonPrimitive("curl -X POST $uploadUrl -F \"file=@your-app.apk\""))
                 put("windows_powershell", JsonPrimitive("curl.exe -X POST $uploadUrl -F \"file=@your-app.apk\""))

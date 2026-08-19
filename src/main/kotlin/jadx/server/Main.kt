@@ -188,6 +188,12 @@ fun startHttpServer(config: ServerConfig, state: ServerState) {
                         put("md5", JsonPrimitive(entry.md5))
                         put("name", JsonPrimitive(entry.originalName))
                         put("size", JsonPrimitive(entry.fileSize))
+                        put("status", JsonPrimitive("uploaded"))
+                        put("next_tool", JsonPrimitive("decompile_apk"))
+                        put(
+                            "next_step",
+                            JsonPrimitive("Immediately call decompile_apk with file_hash=${entry.hash} before any other analysis tool.")
+                        )
                     })
                 } else {
                     call.respond(HttpStatusCode.BadRequest, "No file uploaded")

@@ -73,7 +73,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 
 | 工具 | 关键参数 | 说明 |
 |------|----------|------|
-| `upload_file` | 无 | 返回 HTTP 上传地址、方法和表单字段名；上传响应中的 `file_hash` 用于后续分析 |
+| `upload_file` | 无 | 返回 HTTP 上传地址、方法和表单字段名；上传成功后必须立即用返回的 `file_hash` 调用 `decompile_apk` |
 | `save_project` | `file_hash` | 生成或刷新 upstream 兼容的 `project.jadx`，并返回项目及缓存目录 |
 | `list_files` | `name?`、`md5?`、`type?` | 列出已上传或曾打开的文件，支持名称片段、MD5 和扩展名过滤 |
 | `list_instances` | 无 | 返回引擎池实例及其文件、会话、状态和创建时间 |
@@ -306,7 +306,7 @@ with open("your-app.apk", "rb") as file:
     print(response.json())
 ```
 
-或者直接用 MCP 客户端调用 `upload_file`，服务端会返回完整的上传 URL，用返回的 `file_hash` 调用分析工具。
+或者直接用 MCP 客户端调用 `upload_file`，服务端会返回完整的上传 URL。上传成功后，必须立即用返回的 `file_hash` 调用 `decompile_apk`，再调用其他分析工具。
 
 如果服务端使用 `--listen 0.0.0.0:<port>` 部署到远程主机或反向代理后面，请务必额外配置：
 
@@ -398,7 +398,7 @@ data class ServerConfig(
 
 ## 工作原理
 
-1. **上传** — 客户端调用 `upload_file` 获取地址，再通过 `POST /upload` 上传 APK/JAR。服务端计算 MD5 哈希并建立索引。
+1. **上传** — 客户端调用 `upload_file` 获取地址，再通过 `POST /upload` 上传 APK/JAR。服务端计算 MD5 哈希并建立索引；上传成功后必须立即调用 `decompile_apk(file_hash=...)`。
 
 2. **项目保存** — 可调用 `save_project(file_hash=...)` 在 `uploads/binary/<md5>/project.jadx` 生成 upstream 兼容的项目文件；其 `cacheDir` 固定指向同目录下的 `project.cache/`。
 

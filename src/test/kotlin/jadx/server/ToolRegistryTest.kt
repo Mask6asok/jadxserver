@@ -56,6 +56,11 @@ class ToolRegistryTest {
         assertEquals("curl -X POST http://127.0.0.1:8080/upload -F \"file=@your-app.apk\"", commands["linux_macos"]!!.jsonPrimitive.content)
         assertEquals("curl.exe -X POST http://127.0.0.1:8080/upload -F \"file=@your-app.apk\"", commands["windows_powershell"]!!.jsonPrimitive.content)
         assertTrue(commands["python_requests"]!!.jsonPrimitive.content.contains("requests.post(\"http://127.0.0.1:8080/upload\""))
+        val description = result.data["description"]!!.jsonPrimitive.content
+        assertContains(description, "decompile_apk")
+        assertContains(description, "file_hash")
+        assertEquals("decompile_apk", result.data["next_tool"]!!.jsonPrimitive.content)
+        assertContains(result.data["next_step"]!!.jsonPrimitive.content, "decompile_apk")
     }
 
     @Test
