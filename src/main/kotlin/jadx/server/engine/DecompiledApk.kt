@@ -47,6 +47,8 @@ class DecompiledApk internal constructor(
     }
     @Volatile
     private var fullCodeCacheWarm = false
+    @Volatile
+    private var usageGraphDirty = false
 
     private fun touch() { lastAccess = Instant.now() }
 
@@ -60,7 +62,7 @@ class DecompiledApk internal constructor(
         touch()
         val diskCode = readFromDisk(className)
         if (diskCode != null) return diskCode
-        return resolveClass(className)?.code
+        return resolveClass(className)?.code.also { if (it != null) usageGraphDirty = true }
     }
 
     fun getClassInfo(className: String): ClassInfo? {
@@ -115,7 +117,7 @@ class DecompiledApk internal constructor(
         touch()
         val cls = resolveClass(className) ?: return null
         val method = findMethod(cls, methodName, signature) ?: return null
-        return method.codeStr
+        return method.codeStr.also { usageGraphDirty = true }
     }
 
     fun getSmali(className: String, methodName: String? = null, signature: String? = null): String? {
@@ -202,7 +204,10 @@ class DecompiledApk internal constructor(
         val codeCache = decompiler.args.codeCache
         if (fullCodeCacheWarm) {
             val cachedCount = classes.count { cls ->
-                runCatching { codeCache.contains(cls.rawName) }.getOrDefault(false)
+                runCatching {
+                    codeCache.contains(cls.rawName) &&
+                        ((codeCache as? ProjectDiskCodeCache)?.hasMetadata(cls.rawName) ?: true)
+                }.getOrDefault(false)
             }
             if (cachedCount == classes.size) {
                 return CodeCacheWarmup(
@@ -228,7 +233,9 @@ class DecompiledApk internal constructor(
             Runnable {
                 for (cls in batch) {
                     try {
-                        if (codeCache.contains(cls.rawName)) {
+                        val cacheReady = codeCache.contains(cls.rawName) &&
+                            ((codeCache as? ProjectDiskCodeCache)?.hasMetadata(cls.rawName) ?: true)
+                        if (cacheReady) {
                             cachedCount.incrementAndGet()
                         } else {
                             cls.decompile()
@@ -253,6 +260,13 @@ class DecompiledApk internal constructor(
         } finally {
             unloadClasses()
             System.gc()
+        }
+
+        // A generated class can update JADX's live usage edges while its
+        // source is produced.  Defer the corrective replay until the next
+        // xref request; cache-only hits leave the already clean graph alone.
+        if (generatedCount.get() > 0) {
+            usageGraphDirty = true
         }
 
         fullCodeCacheWarm = failedCount.get() == 0
@@ -293,15 +307,20 @@ class DecompiledApk internal constructor(
 
     private fun getClassXrefsJadx(className: String, limit: Int): List<XrefMatch> {
         val cls = resolveClass(className) ?: return emptyList()
+        reapplyLoadTimeUsageInfo()
         return runLocatedUsageScan {
             val results = mutableListOf<XrefMatch>()
             val seen = linkedSetOf<String>()
-            appendLocatedUsage(results, seen, cls, safeUseIn(cls), limit)
-            for (mth in cls.methods) {
-                if (results.size >= limit) break
-                if (mth.isConstructor) {
-                    appendLocatedUsage(results, seen, mth, safeUseIn(mth), limit)
+            val usageByNode = buildList {
+                add(cls to safeUseIn(cls))
+                for (mth in cls.methods.sortedBy { it.fullName }) {
+                    if (mth.isConstructor) add(mth to safeUseIn(mth))
                 }
+            }
+            reapplyLoadTimeUsageInfo()
+            for ((node, uses) in usageByNode) {
+                if (results.size >= limit) break
+                appendLocatedUsage(results, seen, node, uses, limit)
             }
             results
         }
@@ -355,24 +374,33 @@ class DecompiledApk internal constructor(
             val results = mutableListOf<XrefMatch>()
             val seen = linkedSetOf<String>()
 
+            // Establish a clean baseline before taking the usage snapshots.
+            reapplyLoadTimeUsageInfo()
+            val toMethods = cls.methods.filter { it.name == methodName }
+                .flatMap { methodWithOverrides(it) }
+                .distinctBy { it.fullName }
+                .sortedBy { it.fullName }
+            val toUses = toMethods.map { it to safeUseIn(it) }
+            val fromMethods = cls.methods.filter { it.name == methodName }.sortedBy { it.fullName }
+            val fromUses = fromMethods.map { method ->
+                method to (try { method.getUsed() } catch (_: Exception) { emptySet() })
+                    .filterIsInstance<JavaMethod>()
+                    .sortedBy { it.fullName }
+            }
+            reapplyLoadTimeUsageInfo()
+
             if (direction == "to" || direction == "both") {
-                val methods = cls.methods.filter { it.name == methodName }
-                    .flatMap { methodWithOverrides(it) }
-                    .distinctBy { it.fullName }
-                for (m in methods) {
+                for ((m, uses) in toUses) {
                     if (results.size >= limit) break
-                    appendLocatedUsage(results, seen, m, safeUseIn(m), limit)
+                    appendLocatedUsage(results, seen, m, uses, limit)
                 }
             }
 
             if (direction == "from" || direction == "both") {
-                val methods = cls.methods.filter { it.name == methodName }
-                for (m in methods) {
+                for ((m, used) in fromUses) {
                     if (results.size >= limit) break
-                    val used = try { m.getUsed() } catch (_: Exception) { emptySet() }
                     for (callee in used) {
                         if (results.size >= limit) break
-                        if (callee !is JavaMethod) continue
                         appendLocatedCalleeUsage(results, seen, caller = m, callee = callee, limit = limit)
                     }
                 }
@@ -638,6 +666,7 @@ class DecompiledApk internal constructor(
         return try {
             block()
         } finally {
+            usageGraphDirty = true
             unloadClasses()
             System.gc()
         }
@@ -647,6 +676,10 @@ class DecompiledApk internal constructor(
         return try {
             block()
         } finally {
+            // locateUsePlaces may lazily generate code and mutate live usage
+            // edges. Defer the single corrective replay until the next xref
+            // request instead of replaying once per captured node.
+            usageGraphDirty = true
             unloadClasses()
             System.gc()
         }
@@ -662,6 +695,9 @@ class DecompiledApk internal constructor(
         val useClasses = useNodes
             .mapNotNull { runCatching { it.topParentClass }.getOrNull() }
             .distinctBy { it.fullName }
+            // Usage collections do not promise a stable iteration order after
+            // class unload/reload (or across separate engines).
+            .sortedBy { it.fullName }
         for (topUseClass in useClasses) {
             if (results.size >= limit) break
             val matches = locateUsePlaces(
@@ -675,7 +711,7 @@ class DecompiledApk internal constructor(
                 appendUnique(results, seen, fallback, limit)
                 continue
             }
-            for (match in matches) {
+            for (match in matches.sortedWith(XREF_MATCH_ORDER)) {
                 appendUnique(results, seen, match, limit)
                 if (results.size >= limit) break
             }
@@ -726,7 +762,7 @@ class DecompiledApk internal constructor(
         return try {
             val codeInfo = topUseClass.codeInfo
             val code = codeInfo.codeStr
-            val positions = topUseClass.getUsePlacesFor(codeInfo, searchNode)
+            val positions = topUseClass.getUsePlacesFor(codeInfo, searchNode).sorted()
             positions.mapNotNull { pos ->
                 val content = CodeUtils.getLineForPos(code, pos).trim()
                 if (content.startsWith("import ")) {
@@ -772,11 +808,21 @@ class DecompiledApk internal constructor(
 
     private fun methodWithOverrides(method: JavaMethod): List<JavaMethod> {
         val related = try { method.overrideRelatedMethods } catch (_: Exception) { emptyList() }
-        return if (related.isEmpty()) listOf(method) else related
+        return (if (related.isEmpty()) listOf(method) else related).sortedBy { it.fullName }
     }
 
     private fun safeUseIn(node: JavaNode): List<JavaNode> {
         return try { node.useIn } catch (_: Exception) { emptyList() }
+    }
+
+    private fun reapplyLoadTimeUsageInfo() {
+        if (!usageGraphDirty) return
+        val cache = decompiler.args.usageInfoCache
+        if (cache is ProjectDiskUsageInfoCache) {
+            if (cache.reapply(decompiler.root)) {
+                usageGraphDirty = false
+            }
+        }
     }
 
     private fun resolveEnclosingNode(codeInfo: ICodeInfo, pos: Int): JavaNode? {
@@ -964,6 +1010,14 @@ class DecompiledApk internal constructor(
     }
 
     private companion object {
+        val XREF_MATCH_ORDER = compareBy<XrefMatch>(
+            { it.className },
+            { it.methodName },
+            { it.line },
+            { it.sourceClassName },
+            { it.sourceMethodName },
+            { it.content },
+        )
         const val RESOLVED_CLASS_CACHE_CAPACITY = 128
         const val FULL_SCAN_UNLOAD_BATCH = 32
         const val MIN_FREE_MEMORY_RATIO = 0.2

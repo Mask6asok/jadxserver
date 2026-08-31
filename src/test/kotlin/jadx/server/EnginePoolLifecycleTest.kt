@@ -165,6 +165,62 @@ class EnginePoolLifecycleTest : LifecyclePoolTestBase() {
         pool.release(inst)
     }
 
+    @Test
+    fun testPendingOpenEnforcesPerFileLimitAcrossSessions() {
+        val hash = addFixtureFile("shared-pending.apk")
+        val pool = makePool(maxTotal = 3, maxPerFile = 1)
+
+        val first = pool.acquire("s1", hash, EngineOptions())
+        assertTrue(first is AcquireResult.NeedSpawn)
+        val second = pool.acquire("s2", hash, EngineOptions())
+
+        assertTrue(second is AcquireResult.Busy, "A second session must share the same per-file limit")
+        val usage = pool.fileUsage(hash)
+        assertEquals(0, usage.instanceCount)
+        assertEquals(1, usage.pendingSpawnCount)
+        assertEquals(1, usage.reservedCount)
+        assertEquals(1, usage.sessionCount)
+        pool.cancelSpawn("unrelated-session", hash)
+        assertEquals(1, pool.fileUsage(hash).reservedCount)
+        pool.cancelSpawn("s1", hash)
+        assertEquals(0, pool.fileUsage(hash).reservedCount)
+    }
+
+    @Test
+    fun testBusyInstanceEnforcesPerFileLimitAcrossSessions() {
+        val hash = addFixtureFile("shared-busy.apk")
+        val pool = makePool(maxTotal = 3, maxPerFile = 1)
+        val instance = spawnAndInsert(pool, "s1", hash)
+
+        val second = pool.acquire("s2", hash, EngineOptions())
+
+        assertTrue(second is AcquireResult.Busy, "A busy engine must prevent another session spawning for the same file")
+        val usage = pool.fileUsage(hash)
+        assertEquals(1, usage.instanceCount)
+        assertEquals(1, usage.busyCount)
+        assertEquals(0, usage.idleCount)
+        assertEquals(0, usage.pendingSpawnCount)
+        assertEquals(1, usage.sessionCount)
+        pool.release(instance)
+    }
+
+    @Test
+    fun testFileUsageTracksCrossSessionAdoption() {
+        val hash = addFixtureFile("shared-adopted.apk")
+        val pool = makePool(maxTotal = 2, maxPerFile = 1)
+        val instance = spawnAndInsert(pool, "s1", hash)
+        pool.release(instance)
+
+        val adopted = pool.acquire("s2", hash, EngineOptions())
+
+        assertTrue(adopted is AcquireResult.Found)
+        val usage = pool.fileUsage(hash)
+        assertEquals(1, usage.instanceCount)
+        assertEquals(1, usage.busyCount)
+        assertEquals(1, usage.sessionCount)
+        pool.release(adopted.instance)
+    }
+
     // Eviction.
     //
     // EnginePool.evict uses strict > (Duration.between(…) > timeout), so

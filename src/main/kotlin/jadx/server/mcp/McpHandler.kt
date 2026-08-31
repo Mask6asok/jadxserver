@@ -17,11 +17,14 @@ import jadx.server.server.AcquireResult
 import jadx.server.server.FileStatus
 import jadx.server.server.MemoryDecision
 import jadx.server.server.MemoryDecisionType
+import jadx.server.server.ProjectCacheLayout
 import jadx.server.server.ServerState
 import jadx.server.tools.CoreTools
+import jadx.server.tools.SnapshotTools
 import jadx.server.project.JadxProjectService
 import jadx.server.tools.ToolRegistry
 import jadx.server.util.getBoolean
+import jadx.server.util.getString
 import kotlinx.serialization.json.*
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.coroutines.TimeoutCancellationException
@@ -30,7 +33,9 @@ import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import java.util.Comparator
+import java.util.concurrent.TimeUnit
 
 class McpHandler(private val state: ServerState) {
     private val logger = LoggerFactory.getLogger(McpHandler::class.java)
@@ -39,7 +44,7 @@ class McpHandler(private val state: ServerState) {
 
     fun createServer(): Server {
         val server = Server(
-            Implementation(name = "jadx-server", version = "1.1.0"),
+                Implementation(name = "jadx-server", version = "1.2.0"),
             ServerOptions(
                 capabilities = ServerCapabilities(
                     tools = ServerCapabilities.Tools(listChanged = true)
@@ -97,8 +102,45 @@ class McpHandler(private val state: ServerState) {
         fileHash: String,
         args: JsonObject,
         sessionId: String
-    ): CallToolResult = state.analysisActivity.withAnalysis {
-        handleSyncAnalysisUnderLease(toolName, fileHash, args, sessionId)
+    ): CallToolResult {
+        if (state.config.runtimeMode == jadx.server.config.RuntimeMode.SHARED) {
+            val fastResult = executeSnapshotFastPath(toolName, fileHash, args)
+            if (fastResult != null) {
+                return toCallToolResult(fastResult)
+            }
+        }
+        return state.analysisActivity.withAnalysis {
+            handleSyncAnalysisUnderLease(toolName, fileHash, args, sessionId)
+        }
+    }
+
+    /**
+     * Execute immutable snapshot operations without taking an engine lease.
+     * A missing/stale snapshot intentionally returns null so the normal
+     * rehydration path can create or refresh it.
+     */
+    private fun executeSnapshotFastPath(
+        toolName: String,
+        fileHash: String,
+        args: JsonObject,
+    ): ToolResult? {
+        val entry = state.fileIndex.resolve(fileHash) ?: return null
+        val snapshot = runCatching {
+            state.apkRuntimeRegistry.get(
+                fileHash,
+                Path.of(entry.path),
+                entry.cacheDirPath?.let { Path.of(it) },
+            )
+        }.getOrNull() ?: return null
+        // A validated on-disk snapshot means cold preparation already
+        // happened in an earlier run; SHARED O1-2 may use both engine slots
+        // immediately for precise operations.
+        state.enginePool.markPrepared(fileHash)
+        return runCatching {
+            SnapshotTools.execute(toolName, snapshot, args)
+        }.onFailure { error ->
+            logger.warn("Snapshot fast path failed for {} {}: {}", toolName, fileHash, error.message)
+        }.getOrNull()
     }
 
     private fun handleSyncAnalysisUnderLease(
@@ -109,6 +151,18 @@ class McpHandler(private val state: ServerState) {
     ): CallToolResult {
         val entry = state.fileIndex.resolve(fileHash)
             ?: return toCallToolResult(ToolResult.notFound("File not found: $fileHash"))
+
+        // Several same-file sessions can pass the outer fast-path check while
+        // the first request is still materializing the immutable snapshot.
+        // Recheck after entering the shared analysis lease so queued light
+        // requests do not unnecessarily open another full JADX engine once
+        // that snapshot is ready.  Unsupported/incomplete snapshot tools
+        // deliberately return null and continue through the engine lane.
+        if (state.config.runtimeMode == jadx.server.config.RuntimeMode.SHARED) {
+            executeSnapshotFastPath(toolName, fileHash, args)?.let {
+                return toCallToolResult(it)
+            }
+        }
 
         val projectFile = entry.projectFilePath?.let { Path.of(it) }
         val binaryDir = Path.of(entry.path).parent
@@ -145,11 +199,28 @@ class McpHandler(private val state: ServerState) {
             null
         }
 
+        val resolvedCacheDir = if (resolvedProject != null) {
+            projectService.resolveProjectCacheDir(projectFile!!, resolvedProject)
+        } else {
+            null
+        }
+
         val sourceDir = when {
+            // Shared mode must materialize the first request into the
+            // persistent per-APK cache.  Otherwise a manifest-only first
+            // request would capture a snapshot next to a temporary engine
+            // and lose it as soon as that engine is closed or the server is
+            // restarted.  CURRENT keeps the lightweight temporary path.
+            state.config.runtimeMode == jadx.server.config.RuntimeMode.SHARED && resolvedCacheDir != null ->
+                ProjectCacheLayout(resolvedCacheDir).codeDir
+            state.config.runtimeMode == jadx.server.config.RuntimeMode.SHARED && entry.cacheDirPath != null ->
+                ProjectCacheLayout(Path.of(entry.cacheDirPath!!)).codeDir
+            state.config.runtimeMode == jadx.server.config.RuntimeMode.SHARED ->
+                ProjectCacheLayout.forBinary(Path.of(entry.path)).codeDir
             toolName in manifestOnlyTools -> null
-            resolvedProject != null -> projectService.resolveProjectCacheDir(projectFile!!, resolvedProject)?.resolve("code")
-            entry.cacheDirPath != null -> Path.of(entry.cacheDirPath!!).resolve("code")
-            else -> state.config.uploadDir.resolve("binary").resolve(entry.md5).resolve("project.cache").resolve("code")
+            resolvedProject != null -> resolvedCacheDir?.let(::ProjectCacheLayout)?.codeDir
+            entry.cacheDirPath != null -> ProjectCacheLayout(Path.of(entry.cacheDirPath!!)).codeDir
+            else -> ProjectCacheLayout.forBinary(Path.of(entry.path)).codeDir
         }
 
         val inputFiles = if (resolvedProject != null) {
@@ -167,13 +238,13 @@ class McpHandler(private val state: ServerState) {
             xrefMode = state.config.xrefMode
         )
 
-        return when (val retryOutcome = acquireWithRetry(sessionId, fileHash, engineOptions)) {
+        return when (val retryOutcome = acquireWithRetry(toolName, fileHash, args, sessionId, engineOptions)) {
             is AcquireRetryResult.Success -> {
                 when (val acquireResult = retryOutcome.result) {
                     is AcquireResult.Found -> {
                         try {
                             val apk = acquireResult.instance.state as DecompiledApk
-                            refuseForHeavyToolIfNeeded(toolName)?.let {
+                            refuseForHeavyToolIfNeeded(toolName, acquireResult.instance)?.let {
                                 state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
                                 cleanupFailedRunArtifacts(cleanupContext)
                                 return it
@@ -183,6 +254,8 @@ class McpHandler(private val state: ServerState) {
                                     toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
                                 }
                             }
+                            captureSnapshotIfEnabled(fileHash, entry.path, apk, toolName, args)
+                            state.enginePool.markPrepared(fileHash)
                             state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                             markHeavyAsUnloadEligible(toolName, acquireResult.instance)
                             unloadHeavyAfterOpen(toolName, acquireResult.instance)
@@ -263,6 +336,8 @@ class McpHandler(private val state: ServerState) {
                                     toCallToolResult(toolRegistry.executeAnalysis(toolName, apk, args))
                                 }
                             }
+                            captureSnapshotIfEnabled(fileHash, entry.path, apk, toolName, args)
+                            state.enginePool.markPrepared(fileHash)
                             state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
                             markHeavyAsUnloadEligible(toolName, instance)
                             unloadHeavyAfterOpen(toolName, instance)
@@ -307,6 +382,14 @@ class McpHandler(private val state: ServerState) {
                         buildFailureResult(code = "POOL_FULL", reason = "pool_full", message = "Worker pool at capacity (${state.config.maxInstances} instances)", legacyCode = -32003)
                     }
                 }
+            }
+            is AcquireRetryResult.Snapshot -> {
+                // The request entered this method after marking the file
+                // ANALYZING, but completed through the immutable snapshot
+                // while waiting.  Restore the same terminal status that the
+                // engine branches set on successful completion.
+                state.fileIndex.updateStatus(entry.hash, FileStatus.ANALYZED)
+                toCallToolResult(retryOutcome.result)
             }
             is AcquireRetryResult.Interrupted -> {
                 state.fileIndex.updateStatus(entry.hash, FileStatus.FAILED)
@@ -383,13 +466,37 @@ class McpHandler(private val state: ServerState) {
         }.toString()))
     }
 
-    private fun refuseForHeavyToolIfNeeded(toolName: String): CallToolResult? {
+    private fun refuseForHeavyToolIfNeeded(toolName: String, instance: EngineInstance): CallToolResult? {
         val weight = toolRegistry.analysisToolWeight(toolName)
         if (weight != ToolRegistry.Companion.ToolWeight.HEAVY) {
             return null
         }
-        val decision = state.memoryGovernor.allowHeavyOperation()
+        var decision = state.memoryGovernor.allowHeavyOperation()
         if (decision.type != MemoryDecisionType.REFUSE) {
+            return null
+        }
+
+        // A preceding light request can leave a large generated class graph
+        // reachable until the next explicit unload.  In SHARED mode the
+        // leased engine is deliberately reused for queued heavy requests, so
+        // refusing immediately at the critical threshold would turn a
+        // serial, memory-bounded workload into a false tool failure.  Drop
+        // unloadable class internals and request one collection, then
+        // re-evaluate the admission decision while the lease is exclusive.
+        runCatching {
+            state.engine.unload(instance)
+            System.gc()
+        }.onFailure { error ->
+            logger.debug(
+                "Failed to reclaim engine {} before heavy tool {}: {}",
+                instance.instanceId,
+                toolName,
+                error.message,
+            )
+        }
+        decision = state.memoryGovernor.allowHeavyOperation()
+        if (decision.type != MemoryDecisionType.REFUSE) {
+            logger.info("Reclaimed memory before heavy tool {} for engine {}", toolName, instance.instanceId)
             return null
         }
         return memoryPressureFailure(toolName, "reuse existing worker", decision)
@@ -425,6 +532,36 @@ class McpHandler(private val state: ServerState) {
         val weight = toolRegistry.analysisToolWeight(toolName)
         if (weight == ToolRegistry.Companion.ToolWeight.HEAVY) {
             state.enginePool.markUnloadEligible(instance)
+        }
+    }
+
+    private fun captureSnapshotIfEnabled(
+        fileHash: String,
+        binaryPath: String,
+        apk: DecompiledApk,
+        toolName: String,
+        args: JsonObject,
+    ) {
+        if (state.config.runtimeMode != jadx.server.config.RuntimeMode.SHARED) {
+            return
+        }
+        try {
+            state.apkRuntimeRegistry.capture(fileHash, Path.of(binaryPath), apk)
+            if (toolName == "class_info" || toolName == "list_methods") {
+                args.getString("class_name")?.let { className ->
+                    state.apkRuntimeRegistry.captureClassInfo(fileHash, Path.of(binaryPath), apk, className)
+                }
+            }
+            logger.debug("Captured immutable APK snapshot for {}", fileHash)
+        } catch (e: OutOfMemoryError) {
+            // Snapshot materialization is optional. Preserve the successful
+            // tool result and let the normal lifecycle release the engine.
+            logger.error("Unable to capture immutable APK snapshot for {} because the heap is exhausted", fileHash)
+            System.gc()
+        } catch (e: Exception) {
+            // Snapshot capture is an optimization. A failure must not turn a
+            // successful analysis into a user-visible analysis failure.
+            logger.warn("Failed to capture immutable APK snapshot for {}: {}", fileHash, e.message)
         }
     }
 
@@ -503,29 +640,99 @@ class McpHandler(private val state: ServerState) {
 
     private sealed class AcquireRetryResult {
         data class Success(val result: AcquireResult) : AcquireRetryResult()
+        data class Snapshot(val result: ToolResult) : AcquireRetryResult()
         data object Interrupted : AcquireRetryResult()
         data object Exhausted : AcquireRetryResult()
     }
 
     private fun acquireWithRetry(
-        sessionId: String,
+        toolName: String,
         fileHash: String,
+        args: JsonObject,
+        sessionId: String,
         options: EngineOptions,
-        maxRetries: Int = 300,
-        retryDelayMs: Long = 100
+        timeout: Duration = state.config.toolTimeout,
     ): AcquireRetryResult {
-        for (i in 0 until maxRetries) {
-            when (val result = state.enginePool.acquire(sessionId, fileHash, options)) {
-                is AcquireResult.Found, is AcquireResult.NeedSpawn ->
+        val timeoutNanos = timeout.toNanos().coerceAtLeast(1L)
+        val deadline = System.nanoTime() + timeoutNanos
+        var queuedAtNanos = 0L
+        while (true) {
+            // A request may have entered this retry loop before the first
+            // same-file request finished snapshot materialization.  Check at
+            // every retry boundary so it can leave the queue without opening
+            // or borrowing another mutable JADX engine.
+            if (state.config.runtimeMode == jadx.server.config.RuntimeMode.SHARED) {
+                executeSnapshotFastPath(toolName, fileHash, args)?.let {
+                    if (queuedAtNanos != 0L) {
+                        logger.info(
+                            "[QUEUE] snapshot-bypass fileHash={} session={} waitMs={}",
+                            fileHash,
+                            sessionId.take(12),
+                            (System.nanoTime() - queuedAtNanos) / 1_000_000,
+                        )
+                    }
+                    return AcquireRetryResult.Snapshot(it)
+                }
+            }
+            val snapshotCapableTool = state.config.runtimeMode == jadx.server.config.RuntimeMode.SHARED &&
+                toolName in snapshotCapableTools
+            val allowSpawn = if (snapshotCapableTool) {
+                // Keep light snapshot misses on the already-admitted engine
+                // until it has captured the requested value.  This avoids a
+                // second full graph during the cold metadata phase; precise
+                // method/xref tools remain free to use the second slot.
+                state.enginePool.fileUsage(fileHash).reservedCount == 0
+            } else {
+                true
+            }
+            when (val result = state.enginePool.acquire(sessionId, fileHash, options, allowSpawn)) {
+                is AcquireResult.Found, is AcquireResult.NeedSpawn -> {
+                    if (queuedAtNanos != 0L) {
+                        logger.info(
+                            "[QUEUE] dequeue fileHash={} session={} waitMs={} queueDepth={}",
+                            fileHash,
+                            sessionId.take(12),
+                            (System.nanoTime() - queuedAtNanos) / 1_000_000,
+                            state.enginePool.waitingCount(),
+                        )
+                    }
                     return AcquireRetryResult.Success(result)
+                }
                 is AcquireResult.Busy, is AcquireResult.Full -> {
-                    try { Thread.sleep(retryDelayMs) } catch (_: InterruptedException) {
+                    if (queuedAtNanos == 0L) {
+                        queuedAtNanos = System.nanoTime()
+                        logger.info(
+                            "[QUEUE] enqueue fileHash={} session={} reason={} queueDepth={}",
+                            fileHash,
+                            sessionId.take(12),
+                            result::class.simpleName,
+                            state.enginePool.waitingCount() + 1,
+                        )
+                    }
+                    val remaining = deadline - System.nanoTime()
+                    if (remaining <= 0L) {
+                        logger.info(
+                            "[QUEUE] timeout fileHash={} session={} waitMs={}",
+                            fileHash,
+                            sessionId.take(12),
+                            (System.nanoTime() - queuedAtNanos) / 1_000_000,
+                        )
+                        return AcquireRetryResult.Exhausted
+                    }
+                    try {
+                        val signalled = state.enginePool.awaitAvailability(
+                            Duration.ofNanos(remaining.coerceAtMost(TimeUnit.SECONDS.toNanos(1)))
+                        )
+                        if (!signalled && deadline - System.nanoTime() <= 0L) {
+                            return AcquireRetryResult.Exhausted
+                        }
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
                         return AcquireRetryResult.Interrupted
                     }
                 }
             }
         }
-        return AcquireRetryResult.Exhausted
     }
 
     private fun handleBackgroundAnalysis(
@@ -600,6 +807,15 @@ class McpHandler(private val state: ServerState) {
     }
 
     companion object {
+        private val snapshotCapableTools = setOf(
+            "get_manifest",
+            "search_manifest_components",
+            "list_classes",
+            "find_class",
+            "get_class_code",
+            "class_info",
+            "list_methods",
+        )
         private val manifestOnlyTools = setOf(
             "get_manifest",
             "get_manifest_summary",

@@ -6,6 +6,7 @@ import jadx.server.engine.EngineOptions
 import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.locks.Condition
 import java.util.concurrent.locks.ReentrantLock
 
 data class PoolKey(
@@ -40,7 +41,9 @@ sealed class AcquireResult {
 data class PoolConfig(
     val maxTotal: Int,
     val maxPerFile: Int,
-    val idleTimeout: Duration
+    val idleTimeout: Duration,
+    /** Prevent duplicate cold opens for one APK until the first request completes. */
+    val singleFlightPreparation: Boolean = false,
 )
 
 data class InstanceInfo(
@@ -53,15 +56,36 @@ data class InstanceInfo(
     val lastUnloadAt: Instant?
 )
 
+/**
+ * A lock-consistent view of the resources currently assigned to one input
+ * file. Pending opens are included because they already consume pool
+ * capacity, even though the expensive engine construction happens outside
+ * the pool lock.
+ */
+data class FilePoolUsage(
+    val fileHash: String,
+    val instanceCount: Int,
+    val busyCount: Int,
+    val idleCount: Int,
+    val pendingSpawnCount: Int,
+    val sessionCount: Int,
+) {
+    val reservedCount: Int get() = instanceCount + pendingSpawnCount
+}
+
 class EnginePool(
     private val config: PoolConfig,
     private val engine: DecompilerEngine,
     private val fileIndex: FileIndex
 ) {
-    private val lock = ReentrantLock()
+    /** Fair lock keeps condition waiters in arrival order for shared-file use. */
+    private val lock = ReentrantLock(true)
     private val pool = mutableMapOf<PoolKey, MutableList<PoolEntry>>()
     private val instanceToKey = mutableMapOf<String, PoolKey>()
     private var maintenanceInProgress = false
+    private val availabilityChanged: Condition = lock.newCondition()
+    private var waitingCount = 0
+    private val preparedFiles = mutableSetOf<String>()
     /**
      * Reservations for engine opens that have been admitted but have not yet
      * reached [insert]. The open happens outside [lock], so counting only
@@ -69,7 +93,19 @@ class EnginePool(
      */
     private val pendingSpawns = mutableMapOf<PoolKey, Int>()
 
-    fun acquire(sessionId: String, fileHash: String, options: EngineOptions): AcquireResult {
+    /**
+     * Acquire an existing engine or reserve a new one.  Callers handling a
+     * snapshot-capable tool may set [allowSpawn] false while a same-file
+     * engine is already opening/processing: the request then waits for the
+     * existing engine to materialize the missing immutable value instead of
+     * creating a second full JADX object graph just for a cache miss.
+     */
+    fun acquire(
+        sessionId: String,
+        fileHash: String,
+        options: EngineOptions,
+        allowSpawn: Boolean = true,
+    ): AcquireResult {
         lock.lock()
         try {
             if (maintenanceInProgress) {
@@ -92,8 +128,16 @@ class EnginePool(
                 return AcquireResult.Found(adoptedEntry.instance)
             }
 
-            val pendingForKey = pendingSpawns[key] ?: 0
-            if ((entries?.size ?: 0) + pendingForKey >= config.maxPerFile) {
+            val usage = fileUsageLocked(fileHash)
+            if (!allowSpawn && usage.reservedCount > 0) {
+                return AcquireResult.Busy
+            }
+            val perFileLimit = if (config.singleFlightPreparation && fileHash !in preparedFiles) {
+                1
+            } else {
+                config.maxPerFile
+            }
+            if (usage.reservedCount >= perFileLimit) {
                 return AcquireResult.Busy
             }
 
@@ -107,7 +151,7 @@ class EnginePool(
             } else {
                 null
             }
-            pendingSpawns[key] = pendingForKey + 1
+            pendingSpawns[key] = (pendingSpawns[key] ?: 0) + 1
             return AcquireResult.NeedSpawn(filePath, options, reclaimedInstance)
         } finally {
             lock.unlock()
@@ -128,6 +172,7 @@ class EnginePool(
                 )
             )
             instanceToKey[instance.instanceId] = key
+            availabilityChanged.signalAll()
         } finally {
             lock.unlock()
         }
@@ -138,6 +183,23 @@ class EnginePool(
         lock.lock()
         try {
             releaseSpawnReservation(PoolKey(sessionId, fileHash))
+            availabilityChanged.signalAll()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /**
+     * Mark the first request for an APK complete.  In shared mode this opens
+     * the remaining configured slots only after the cold preparation has
+     * produced its snapshot/cache (or deliberately failed and returned).
+     */
+    fun markPrepared(fileHash: String) {
+        lock.lock()
+        try {
+            if (config.singleFlightPreparation && preparedFiles.add(fileHash)) {
+                availabilityChanged.signalAll()
+            }
         } finally {
             lock.unlock()
         }
@@ -151,6 +213,7 @@ class EnginePool(
             val entry = entries.find { it.instance.instanceId == instance.instanceId } ?: return
             entry.state = PoolState.Idle
             entry.lastReleased = Instant.now()
+            availabilityChanged.signalAll()
         } finally {
             lock.unlock()
         }
@@ -179,6 +242,7 @@ class EnginePool(
             }
             entry.unloadEligible = false
             entry.lastUnloadAt = Instant.now()
+            availabilityChanged.signalAll()
             return true
         } finally {
             lock.unlock()
@@ -220,6 +284,9 @@ class EnginePool(
                 pool.remove(key)
             }
 
+            if (evicted.isNotEmpty()) {
+                availabilityChanged.signalAll()
+            }
             return evicted
         } finally {
             lock.unlock()
@@ -253,6 +320,8 @@ class EnginePool(
                 .toList()
             pool.clear()
             instanceToKey.clear()
+            preparedFiles.clear()
+            availabilityChanged.signalAll()
             return detached
         } finally {
             lock.unlock()
@@ -263,6 +332,7 @@ class EnginePool(
         lock.lock()
         try {
             maintenanceInProgress = false
+            availabilityChanged.signalAll()
         } finally {
             lock.unlock()
         }
@@ -303,6 +373,7 @@ class EnginePool(
             if (entries.isEmpty()) {
                 pool.remove(key)
             }
+            availabilityChanged.signalAll()
             return entry.instance
         } finally {
             lock.unlock()
@@ -313,6 +384,57 @@ class EnginePool(
         lock.lock()
         try {
             return instanceToKey.size
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /**
+     * Wait for a pool lifecycle change instead of polling/sleeping.  The
+     * caller must retry [acquire] after this method returns because a signal
+     * may have been produced by another file's release.
+     *
+     * The interrupt is deliberately propagated so MCP callers can return a
+     * typed WORKER_INTERRUPTED result and never lose their cancellation bit.
+     */
+    @Throws(InterruptedException::class)
+    fun awaitAvailability(timeout: Duration): Boolean {
+        if (timeout.isZero || timeout.isNegative) {
+            return false
+        }
+        lock.lockInterruptibly()
+        try {
+            waitingCount++
+            var remaining = timeout.toNanos()
+            try {
+                while (remaining > 0L) {
+                    remaining = availabilityChanged.awaitNanos(remaining)
+                    if (remaining > 0L) {
+                        return true
+                    }
+                }
+                return false
+            } finally {
+                waitingCount--
+            }
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun waitingCount(): Int {
+        lock.lock()
+        try {
+            return waitingCount
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun fileUsage(fileHash: String): FilePoolUsage {
+        lock.lock()
+        try {
+            return fileUsageLocked(fileHash)
         } finally {
             lock.unlock()
         }
@@ -365,6 +487,40 @@ class EnginePool(
             pool.remove(key)
         }
         return entry.instance
+    }
+
+    private fun fileUsageLocked(fileHash: String): FilePoolUsage {
+        var instanceCount = 0
+        var busyCount = 0
+        var idleCount = 0
+        val sessions = mutableSetOf<String>()
+        for ((key, entries) in pool) {
+            if (key.fileHash != fileHash) {
+                continue
+            }
+            if (entries.isNotEmpty()) {
+                sessions.add(key.sessionId)
+            }
+            instanceCount += entries.size
+            busyCount += entries.count { it.state == PoolState.Busy }
+            idleCount += entries.count { it.state == PoolState.Idle }
+        }
+        pendingSpawns.forEach { (key, count) ->
+            if (key.fileHash == fileHash && count > 0) {
+                sessions.add(key.sessionId)
+            }
+        }
+        return FilePoolUsage(
+            fileHash = fileHash,
+            instanceCount = instanceCount,
+            busyCount = busyCount,
+            idleCount = idleCount,
+            pendingSpawnCount = pendingSpawns
+                .asSequence()
+                .filter { (key, _) -> key.fileHash == fileHash }
+                .sumOf { (_, count) -> count },
+            sessionCount = sessions.size,
+        )
     }
 
     private fun releaseSpawnReservation(key: PoolKey) {

@@ -17,6 +17,17 @@ data class ServerConfig(
     val uploadDir: Path = Path.of("./uploads"),
     val toolTimeout: Duration = Duration.ofMinutes(5),
     val xrefMode: XrefMode = XrefMode.JADX,
+    /**
+     * Runtime topology used for analysis requests. CURRENT preserves the
+     * session-oriented engine pool behaviour; SHARED enables the per-file
+     * runtime admission and snapshot fast path used by the bounded-memory
+     * five-subagent mode.
+     */
+    val runtimeMode: RuntimeMode = RuntimeMode.CURRENT,
+    /** Maximum number of mutable JADX engines resident for one APK in SHARED mode. */
+    val sharedEngineSlots: Int = 1,
 )
 
 enum class XrefMode { TEXT, JADX }
+
+enum class RuntimeMode { CURRENT, SHARED }

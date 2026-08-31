@@ -117,6 +117,11 @@ class JadxEngine : DecompilerEngine {
         try {
             val sourceDir = options.sourceDir ?: ownedCacheDir!!.resolve("code")
             val projectCacheLayout = sourceDir.parent.let(::ProjectCacheLayout)
+            val diskCodeCache = ProjectDiskCodeCache(
+                sourceDir,
+                projectCacheLayout,
+                requireMetadata = options.xrefMode == XrefMode.JADX,
+            )
             val expectedCacheState = if (options.xrefMode == XrefMode.JADX) {
                 buildExpectedCacheState(file, options)
             } else {
@@ -127,7 +132,7 @@ class JadxEngine : DecompilerEngine {
                 threadsCount = resolveThreads(options.threads)
                 isDeobfuscationOn = options.deobfuscate
                 isSkipResources = options.skipResources
-                codeCache = ProjectDiskCodeCache(sourceDir)
+                codeCache = diskCodeCache
                 usageInfoCache = when {
                     options.xrefMode != XrefMode.JADX -> EmptyUsageInfoCache()
                     expectedCacheState != null -> ProjectDiskUsageInfoCache(projectCacheLayout, expectedCacheState)
@@ -145,6 +150,10 @@ class JadxEngine : DecompilerEngine {
 
             decompiler = JadxDecompiler(args)
             decompiler.load()
+            // Code-cache reads during class use happen after open returns. Bind
+            // the live root only now so persisted metadata can be rehydrated
+            // lazily without serializing any JADX object references.
+            diskCodeCache.bindRoot(decompiler.root)
 
             val classes = decompiler.classes
             val resourceList = decompiler.resources

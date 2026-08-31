@@ -14,6 +14,8 @@ class ServerState(
 ) {
     val fileIndex: FileIndex
     val enginePool: EnginePool
+    /** Shared immutable per-APK metadata/source index used by SHARED runtime mode. */
+    val apkRuntimeRegistry = ApkRuntimeRegistry()
     val sessionManager = SessionManager()
     val taskManager = TaskManager()
     val analysisActivity = AnalysisActivityCoordinator()
@@ -33,8 +35,9 @@ class ServerState(
         }
         val poolConfig = PoolConfig(
             maxTotal = resolvedMaxTotal,
-            maxPerFile = config.maxPerFile.coerceAtMost(resolvedMaxTotal),
-            idleTimeout = config.idleTimeout
+            maxPerFile = effectiveMaxPerFile(resolvedMaxTotal),
+            idleTimeout = config.idleTimeout,
+            singleFlightPreparation = config.runtimeMode == jadx.server.config.RuntimeMode.SHARED,
         )
         enginePool = EnginePool(poolConfig, engine, fileIndex)
         idleEvictor = IdleEvictor(
@@ -73,9 +76,22 @@ class ServerState(
             }
         }
         fileIndex.persist(config.uploadDir)
+        apkRuntimeRegistry.clear()
     }
 
     private companion object {
         const val LOW_HEAP_PROFILE_BYTES = 12L * 1024L * 1024L * 1024L
+    }
+
+    private fun effectiveMaxPerFile(resolvedMaxTotal: Int): Int {
+        val configured = if (config.runtimeMode == jadx.server.config.RuntimeMode.SHARED) {
+            // O1 deliberately bounds the mutable graph to one or two copies;
+            // larger values recreate the memory failure mode this topology is
+            // intended to avoid, even if a caller passes an unsafe CLI value.
+            config.sharedEngineSlots.coerceIn(1, 2)
+        } else {
+            config.maxPerFile
+        }
+        return configured.coerceAtLeast(1).coerceAtMost(resolvedMaxTotal)
     }
 }

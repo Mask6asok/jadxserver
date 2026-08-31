@@ -28,6 +28,13 @@ src/test/kotlin/jadx/server/fixture/*
 !src/test/kotlin/jadx/server/fixture/LifecycleMockEngine.kt
 !src/test/kotlin/jadx/server/AndroidManifestParserTest.kt
 !src/test/kotlin/jadx/server/ManifestToolsApkIntegrationTest.kt
+!src/test/kotlin/jadx/server/ApkRuntimeRegistryTest.kt
+!src/test/kotlin/jadx/server/SnapshotToolsTest.kt
+!src/test/kotlin/jadx/server/EnginePoolQueueTest.kt
+!src/test/kotlin/jadx/server/benchmark/
+!src/test/kotlin/jadx/server/benchmark/*.kt
+benchmarks/__pycache__/
+benchmarks/results/
 oom.hprof
 run.sh
 AGENTS.md

@@ -19,6 +19,7 @@ import java.time.Instant
  *     method/               -- method-level xref cache (JSON)
  *   server/
  *     cache-state.json      -- cache validity metadata (see [CacheState])
+ *     project.snapshot.json -- immutable shared-runtime snapshot
  *
  * This is THE authoritative source for cache path resolution across
  * engine and handler flows. No other component should hardcode paths
@@ -34,11 +35,17 @@ class ProjectCacheLayout(val cacheDir: Path) {
     /** Source files directory for decompiled Java sources. */
     val sourcesDir: Path get() = codeDir.resolve("sources")
 
+    /** Persisted code metadata directory used to rehydrate xref locations. */
+    val codeMetadataDir: Path get() = codeDir.resolve("metadata")
+
     /** Xref usage cache directory (class + method sub-dirs). */
     val usageDir: Path get() = cacheDir.resolve("usage")
 
     /** JSON cache-state metadata file. */
     val stateFile: Path get() = cacheDir.resolve("server").resolve("cache-state.json")
+
+    /** Immutable server-side project snapshot used by the shared runtime. */
+    val snapshotFile: Path get() = cacheDir.resolve("server").resolve("project.snapshot.json")
 
     // ── Path resolution ──
 
@@ -48,6 +55,15 @@ class ProjectCacheLayout(val cacheDir: Path) {
      */
     fun sourceFileFor(className: String): Path =
         sourcesDir.resolve(className.replace('.', '/') + ".java")
+
+    /**
+     * Resolve the metadata sidecar for a decompiled class.
+     *
+     * The class-name validation remains the responsibility of the code cache;
+     * this resolver is deliberately only the authoritative layout owner.
+     */
+    fun codeMetadataFileFor(className: String): Path =
+        codeMetadataDir.resolve(className.replace('.', '/') + ".jadxmd")
 
     /**
      * Resolve the filesystem path for a xref cache file.
@@ -65,6 +81,7 @@ class ProjectCacheLayout(val cacheDir: Path) {
     /** Create all required cache subdirectories. */
     fun ensureDirs() {
         Files.createDirectories(sourcesDir)
+        Files.createDirectories(codeMetadataDir)
         Files.createDirectories(usageDir.resolve("class"))
         Files.createDirectories(usageDir.resolve("method"))
         Files.createDirectories(stateFile.parent)
@@ -127,6 +144,10 @@ class ProjectCacheLayout(val cacheDir: Path) {
     }
 
     companion object {
+        /** Resolve the default project cache layout for an indexed binary. */
+        fun forBinary(binaryPath: Path): ProjectCacheLayout =
+            ProjectCacheLayout(binaryPath.toAbsolutePath().normalize().parent.resolve("project.cache"))
+
         internal val json: Json = Json {
             prettyPrint = true
             ignoreUnknownKeys = false

@@ -1,6 +1,10 @@
 package jadx.server
 
+import jadx.api.JadxArgs
+import jadx.api.impl.AnnotatedCodeInfo
 import jadx.api.impl.SimpleCodeInfo
+import jadx.api.metadata.annotations.NodeEnd
+import jadx.core.dex.nodes.RootNode
 import jadx.server.config.ServerConfig
 import jadx.server.engine.ProjectDiskCodeCache
 import jadx.server.mcp.FailedRunCleanupContext
@@ -53,6 +57,56 @@ class ProjectDiskCodeCacheTest {
             assertTrue(cache.contains(className))
             assertEquals(code, cache.getCode(className))
             assertEquals(code, cache.get(className).codeStr)
+        }
+    }
+
+    @Test
+    fun testMetadataSidecarRoundTripsAndRejectsChangedSource() {
+        val className = "com.example.Metadata"
+        val code = "class Metadata {}"
+        val info = AnnotatedCodeInfo(
+            code,
+            mapOf(1 to 7),
+            mapOf(0 to NodeEnd.VALUE),
+        )
+
+        cache.add(className, info)
+        val metadataFile = tempDir.resolve("code/metadata/com/example/Metadata.jadxmd")
+        assertTrue(Files.exists(metadataFile), "metadata sidecar should be written atomically")
+
+        val reopened = ProjectDiskCodeCache(tempDir)
+        try {
+            reopened.bindRoot(RootNode(JadxArgs()))
+            val restored = reopened.get(className)
+            assertTrue(restored.hasMetadata(), "metadata should be restored after cache reopen")
+            assertEquals(code, restored.codeStr)
+            assertEquals(7, restored.codeMetadata.lineMapping[1])
+            assertEquals(NodeEnd.VALUE.annType, restored.codeMetadata.getAt(0)?.annType)
+
+            Files.writeString(tempDir.resolve("sources/com/example/Metadata.java"), "class Changed {}")
+            val stale = reopened.get(className)
+            assertFalse(stale.hasMetadata(), "changed source must not reuse stale metadata")
+        } finally {
+            reopened.close()
+        }
+    }
+
+    @Test
+    fun testXrefCacheTreatsLegacySourceOnlyEntryAsMissAfterRootBind() {
+        val className = "com.example.Legacy"
+        cache.add(className, SimpleCodeInfo("class Legacy {}"))
+        val metadataFile = tempDir.resolve("code/metadata/com/example/Legacy.jadxmd")
+        assertTrue(Files.exists(metadataFile))
+        Files.delete(metadataFile)
+
+        val xrefCache = ProjectDiskCodeCache(tempDir, requireMetadata = true)
+        try {
+            xrefCache.bindRoot(RootNode(JadxArgs()))
+            val result = xrefCache.get(className)
+            assertEquals("", result.codeStr, "legacy source-only entry must force regeneration")
+            assertFalse(result.hasMetadata())
+        } finally {
+            xrefCache.close()
         }
     }
 

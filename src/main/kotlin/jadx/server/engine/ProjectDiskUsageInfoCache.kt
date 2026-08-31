@@ -93,6 +93,23 @@ class ProjectDiskUsageInfoCache(
         memCache.close()
     }
 
+    /**
+     * Restore the immutable usage graph after code generation passes have
+     * mutated live use-in/use-out lists (for example, method inlining).
+     *
+     * Xref tools need the load-time graph rather than the order-dependent
+     * post-codegen graph.  The caller already owns the engine lane, so this
+     * method only synchronizes cache materialization and never runs JADX
+     * visitors concurrently with a request.
+     */
+    fun reapply(root: RootNode): Boolean {
+        synchronized(loadLock) {
+            val data = memCache.get(root) ?: return false
+            data.apply()
+            return true
+        }
+    }
+
     private fun loadUsageData(path: Path): RawUsageData? {
         return try {
             DataInputStream(BufferedInputStream(Files.newInputStream(path))).use(::deserializeUsageData)
@@ -142,6 +159,7 @@ class ProjectDiskUsageInfoCache(
     ) : IUsageInfoData {
         override fun apply() {
             val clsMap = rawUsageData.clsMap
+            resetLiveUsageGraph()
             for (cls in root.classes) {
                 val clsUsageData = clsMap[cls.rawName] ?: continue
                 applyForClass(clsUsageData, cls)
@@ -154,15 +172,22 @@ class ProjectDiskUsageInfoCache(
         }
 
         private fun applyForClass(clsUsageData: ClsUsageData, cls: ClassNode) {
+            // UsageInfo applies Set-backed collections in node sort order.
+            // Keep that contract when replaying the disk representation too:
+            // HashMap/HashSet iteration order is not stable across JVMs and
+            // the order is observable by xref tools.
             cls.setDependencies(resolveClsList(clsUsageData.clsDeps))
             cls.setUseIn(resolveClsList(clsUsageData.clsUsage))
             cls.setUseInMth(resolveMthList(clsUsageData.clsUseInMth))
 
             for (mth in cls.methods) {
                 val mthUsageData = clsUsageData.mthUsage[mth.methodInfo.shortId] ?: continue
-                mth.setUseIn(resolveMthList(mthUsageData.usage))
                 mth.setUsed(resolveMthList(mthUsageData.uses))
-                mth.setUnresolvedUsed(mthUsageData.unresolvedUsage)
+                mth.setUseIn(resolveMthList(mthUsageData.usage))
+                // The upstream collector exposes unresolved refs from a
+                // HashSet without sorting. Canonicalize both freshly written
+                // and legacy disk data before exposing them on the node.
+                mth.setUnresolvedUsed(mthUsageData.unresolvedUsage.sortedWith(UNRESOLVED_REF_ORDER))
                 mth.setCallsSelf(mthUsageData.callsSelf)
             }
             for (fld in cls.fields) {
@@ -171,14 +196,46 @@ class ProjectDiskUsageInfoCache(
             }
         }
 
+        /**
+         * Code-generation visitors can mutate usage lists after the usage
+         * cache was loaded. Replaying only keys present in the raw cache
+         * leaves those mutations behind for classes/methods with no entry.
+         * Clear every live edge first; method reverse edges must be cleared in
+         * the order below because MethodNode.setUseIn adds itself to callers'
+         * `used` sets.
+         */
+        private fun resetLiveUsageGraph() {
+            val classes = root.classes
+            for (cls in classes) {
+                for (mth in cls.methods) {
+                    mth.setUsed(emptyList())
+                }
+            }
+            for (cls in classes) {
+                cls.setDependencies(emptyList())
+                cls.setUseIn(emptyList())
+                cls.setUseInMth(emptyList())
+                for (fld in cls.fields) {
+                    fld.setUseIn(emptyList())
+                }
+                for (mth in cls.methods) {
+                    mth.setUseIn(emptyList())
+                    mth.setUnresolvedUsed(emptyList())
+                    mth.setCallsSelf(false)
+                }
+            }
+        }
+
         override fun visitUsageData(visitor: IUsageInfoVisitor) {
             throw JadxRuntimeException("Not implemented")
         }
 
-        private fun resolveClsList(clsList: List<String>): List<ClassNode> = clsList.mapNotNull(root::resolveRawClass)
+        private fun resolveClsList(clsList: List<String>): List<ClassNode> = clsList
+            .sorted()
+            .mapNotNull(root::resolveRawClass)
 
         private fun resolveMthList(mthRefList: List<MthRef>): List<MethodNode> =
-            Utils.collectionMap(mthRefList, { ref -> root.resolveDirectMethod(ref.cls, ref.shortId) })
+            Utils.collectionMap(mthRefList.sortedWith(MTH_REF_ORDER), { ref -> root.resolveDirectMethod(ref.cls, ref.shortId) })
     }
 
     private class CollectUsageData(private val data: RawUsageData) : IUsageInfoVisitor {
@@ -391,7 +448,9 @@ class ProjectDiskUsageInfoCache(
                 clsMap[cls] = clsIdx++
             }
 
-            val methods = clsDataMap.values.flatMap { it.mthUsage.values }.map { it.mthRef }
+            val methods = clsDataMap.values.flatMap { it.mthUsage.values }
+                .map { it.mthRef }
+                .sortedWith(MTH_REF_ORDER)
             writeUVInt(out, methods.size)
             methods.forEachIndexed { index, mth ->
                 writeUVInt(out, clsMap.getValue(mth.cls))
@@ -403,6 +462,7 @@ class ProjectDiskUsageInfoCache(
                 .flatMap { it.mthUsage.values.asSequence() }
                 .flatMap { it.unresolvedUsage.asSequence() }
                 .filterNotNull()
+                .sortedWith(compareBy({ it.parentClassType ?: "" }, { it.name ?: "" }, { it.returnType ?: "" }, { it.argTypes?.joinToString("\u0000") ?: "" }))
                 .forEach { unresolvedMthMap.putIfAbsent(it, unresolvedMthMap.size) }
             writeUVInt(out, unresolvedMthMap.size)
             for (uMth in unresolvedMthMap.keys) {
@@ -421,7 +481,7 @@ class ProjectDiskUsageInfoCache(
                 writeMthList(out, mthMap, clsData.clsUseInMth)
 
                 writeUVInt(out, clsData.mthUsage.size)
-                for (mthData in clsData.mthUsage.values) {
+                for (mthData in clsData.mthUsage.values.sortedBy { it.mthRef.shortId }) {
                     writeUVInt(out, mthMap.getValue(mthData.mthRef))
                     writeMthList(out, mthMap, mthData.usage)
                     writeMthList(out, mthMap, mthData.uses)
@@ -430,7 +490,7 @@ class ProjectDiskUsageInfoCache(
                 }
 
                 writeUVInt(out, clsData.fldUsage.size)
-                for (fldData in clsData.fldUsage.values) {
+                for (fldData in clsData.fldUsage.values.sortedBy { it.fldRef.shortId }) {
                     out.writeUTF(fldData.fldRef.shortId)
                     writeMthList(out, mthMap, fldData.usage)
                 }
@@ -464,8 +524,17 @@ class ProjectDiskUsageInfoCache(
                 return
             }
             writeUVInt(out, mthList.size)
-            mthList.forEach { writeUVInt(out, mthMap.getValue(it)) }
+            mthList.sortedWith(MTH_REF_ORDER).forEach { writeUVInt(out, mthMap.getValue(it)) }
         }
+
+        private val MTH_REF_ORDER = compareBy<MthRef>({ it.cls }, { it.shortId })
+
+        private val UNRESOLVED_REF_ORDER = compareBy<IMethodRef>(
+            { it.parentClassType ?: "" },
+            { it.name ?: "" },
+            { it.returnType ?: "" },
+            { it.argTypes?.joinToString("\u0000") ?: "" },
+        )
 
         private fun readUnresolvedMthList(input: DataInputStream, methods: Array<IMethodRef?>): List<IMethodRef> {
             val count = readUVInt(input)
@@ -479,7 +548,7 @@ class ProjectDiskUsageInfoCache(
                 return
             }
             writeUVInt(out, mthList.size)
-            mthList.forEach { writeUVInt(out, mthMap.getValue(it)) }
+            mthList.sortedWith(UNRESOLVED_REF_ORDER).forEach { writeUVInt(out, mthMap.getValue(it)) }
         }
 
         private fun writeUVInt(out: DataOutputStream, value: Int) {

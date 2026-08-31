@@ -14,6 +14,7 @@ import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import jadx.server.config.ServerConfig
+import jadx.server.config.RuntimeMode
 import jadx.server.config.XrefMode
 import jadx.server.mcp.McpHandler
 import jadx.server.server.ServerState
@@ -42,6 +43,8 @@ fun main(args: Array<String>) {
     var memoryCleanupInterval = Duration.ofHours(1)
     var maxCachedApks = -1
     var toolTimeout = Duration.ofMinutes(5)
+    var runtimeMode = RuntimeMode.CURRENT
+    var sharedEngineSlots = 1
     var jadxVerbose = false
     var listFilesRequested = false
     var listFilesLimit: Int? = null
@@ -63,6 +66,14 @@ fun main(args: Array<String>) {
             "--memory-cleanup-interval" -> { if (i+1 < args.size) memoryCleanupInterval = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 3600); i++ }
             "--max-cached-apks" -> { if (i+1 < args.size) maxCachedApks = args[i+1].toIntOrNull() ?: 10; i++ }
             "--tool-timeout" -> { if (i+1 < args.size) toolTimeout = Duration.ofSeconds(args[i+1].toLongOrNull() ?: 300); i++ }
+            "--runtime-mode" -> {
+                if (i + 1 < args.size) runtimeMode = RuntimeMode.valueOf(args[i + 1].uppercase())
+                i++
+            }
+            "--shared-engine-slots" -> {
+                if (i + 1 < args.size) sharedEngineSlots = (args[i + 1].toIntOrNull() ?: 1).coerceIn(1, 2)
+                i++
+            }
             "--list-files" -> {
                 listFilesRequested = true
                 val next = args.getOrNull(i + 1)
@@ -127,6 +138,8 @@ fun main(args: Array<String>) {
         uploadDir = Path.of(upload),
         toolTimeout = toolTimeout,
         xrefMode = xrefMode,
+        runtimeMode = runtimeMode,
+        sharedEngineSlots = sharedEngineSlots,
     )
     val state = ServerState(config)
 
@@ -235,6 +248,8 @@ fun printHelp() {
           --upload-dir <path>        Upload directory (default: ./uploads)
           --tool-timeout <s>         Tool execution timeout in seconds (default: 300)
           --xref-mode <mode>         Cross-reference mode: text, jadx (default: jadx)
+          --runtime-mode <mode>      Runtime topology: current or shared (default: current)
+          --shared-engine-slots <n>  Mutable JADX engines per APK in shared mode (default: 1)
           --list-files [limit]       Print indexed files newest first and exit (default: all)
           --delete-files-before <d>  Delete old analyzed/failed files and exit
           --jadx-verbose             Enable jadx.core library logging (default: OFF)

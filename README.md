@@ -19,13 +19,14 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 - **磁盘源码缓存** — 反编译后的 Java 源码保存到 `uploads/binary/<md5>/project.cache/code/sources/`，全量预热后搜索直接并行扫描磁盘缓存，避免反复撑大 JADX 堆
 - **多格式支持** — 支持 APK、JAR、AAB、XAPK、APKS、APKM、DEX 等，通过 jadx 插件扩展
 
-## 1.1.0 更新摘要
+## 1.2.0 更新摘要
 
 - **Manifest 结构化工具**：新增 `get_manifest_summary`、`list_manifest_permissions`、`list_manifest_components`、`search_manifest_components`、`list_manifest_intent_filters`、`get_manifest_entrypoints`，客户端可以直接查询精确字段，减少拉取完整 Manifest XML 后自行解析的上下文消耗。
 - **搜索性能优化**：`decompile_apk` 会预热 JADX 磁盘源码缓存，`search_code` 和 `search_string` 优先并行扫描缓存源码，降低重复反编译导致的内存峰值。
 - **8GB 运行配置**：默认 JVM 参数改为 `-Xmx8G`，低堆配置下自动收敛引擎实例数量；新增 `--engine-threads`，默认按 CPU 自动选择线程数，也可以显式提高 CPU 并行度。
 - **缓存可观测性**：`decompile_apk` 返回 `code_cache` 状态、耗时和缓存文件数量，便于判断搜索是否已进入缓存路径。
 - **内存自动清理**：服务默认每小时在无分析任务时清理空闲引擎和 JVM 堆，降低长期运行的内存占用。
+- **同 APK 共享运行时**：新增 `--runtime-mode shared`，按 `file_hash` 聚合 Engine admission，首次准备按 APK single-flight，使用条件等待避免忙轮询，并持久化不含 JADX 可变对象的 `project.snapshot.json`；`--shared-engine-slots` 可在 1～2 个受控 Engine 间折中内存与排队时间。
 - **文件维护 CLI**：新增 `--list-files [LIMIT]` 和 `--delete-files-before DAYS` 一次性维护命令，执行后直接退出且不启动服务。
 
 ## 架构
@@ -48,10 +49,16 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 │Tools  │  │    Pool     │  │ Index  │
 └───────┘  └──────┬──────┘  └────────┘
                   │
-           ┌──────┴──────┐
-           │  JadxEngine  │  包装 JadxDecompiler
-           │ DecompiledApk│  零拷贝结果访问
-           └─────────────┘
+           ┌──────┴─────────────────────────┐
+           │ ApkRuntimeRegistry              │
+           │ ProjectSnapshot（只读快路径）   │
+           │ Engine slots + 条件等待队列     │
+           └─────────────┬───────────────────┘
+                         │
+           ┌─────────────┴─────────────┐
+           │  JadxEngine               │  包装 JadxDecompiler
+           │  DecompiledApk             │  每 slot 独占、不可跨线程共享
+           └───────────────────────────┘
 ```
 
 ### 模块布局
@@ -60,8 +67,8 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 |------|---------|------|
 | `config` | `ServerConfig.kt` | CLI 参数、池大小、超时 |
 | `mcp` | `McpHandler.kt`、`McpToolDef.kt`、`McpResult.kt` | MCP 协议接线、工具 Schema 生成、结果格式化 |
-| `server` | `EnginePool.kt`、`FileIndex.kt`、`SessionManager.kt`、`TaskManager.kt`、`IdleEvictor.kt`、`ServerState.kt` | 实例生命周期、文件追踪、会话亲和、后台任务、驱逐 |
-| `engine` | `DecompilerEngine.kt`、`JadxEngine.kt`、`DecompiledApk.kt`、`MockEngine.kt` | 反编译器抽象、jadx 集成、零拷贝数据访问 |
+| `server` | `EnginePool.kt`、`ApkRuntimeRegistry.kt`、`FileIndex.kt`、`SessionManager.kt`、`TaskManager.kt`、`IdleEvictor.kt`、`ServerState.kt` | 实例生命周期、按 APK admission/等待、快照注册、文件追踪、会话亲和、后台任务、驱逐 |
+| `engine` | `DecompilerEngine.kt`、`JadxEngine.kt`、`DecompiledApk.kt`、`ProjectSnapshot.kt`、`MockEngine.kt` | 反编译器抽象、jadx 集成、可持久化只读快照、零拷贝结果访问 |
 | `tools` | `ServerTools.kt`、`CoreTools.kt`、`ClassTools.kt`、`MethodTools.kt`、`SearchTools.kt`、`XrefTools.kt`、`ResourceTools.kt`、`ToolRegistry.kt` | MCP 工具实现 |
 | `util` | `HashUtil.kt`、`JsonExt.kt` | MD5 哈希、JSON 辅助扩展 |
 
@@ -76,7 +83,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 | `upload_file` | 无 | 返回 HTTP 上传地址、方法和表单字段名；上传成功后必须立即用返回的 `file_hash` 调用 `decompile_apk` |
 | `save_project` | `file_hash` | 生成或刷新 upstream 兼容的 `project.jadx`，并返回项目及缓存目录 |
 | `list_files` | `name?`、`md5?`、`type?` | 列出已上传或曾打开的文件，支持名称片段、MD5 和扩展名过滤 |
-| `list_instances` | 无 | 返回引擎池实例及其文件、会话、状态和创建时间 |
+| `list_instances` | `file_hash?` | 返回引擎池实例及按 APK 的 reservation/queue 使用情况 |
 | `server_health` | 无 | 返回运行时间、内存、会话、任务、文件和实例统计 |
 | `tool_catalog` | `query?` | 按名称或描述中的关键词发现工具 |
 | `tool_help` | `tool` | 按精确工具名返回参数 Schema 和详细帮助 |
@@ -171,6 +178,26 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew run --args="--listen 0.0.0.0:9090 --public-base-url https://jadx.example.com --max-instances 4"
 ```
 
+同一 APK 的五路 MCP 压测可使用 `benchmarks/same_apk_mcp_benchmark.py`。服务端需分别以 `CURRENT` 和 `SHARED` 启动，脚本上传一次 APK 后为五个线程协商独立 session；`--pid` 可附带采集服务进程 RSS/VmHWM，`--cgroup-path` 可附带采集 cgroup memory。
+
+```bash
+# 低内存共享运行时：同一 APK 保留 1 个 mutable JADX Engine
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.2.0-all.jar \
+  --runtime-mode shared --shared-engine-slots 1 --max-instances 5 --max-per-file 5
+
+python3 benchmarks/same_apk_mcp_benchmark.py \
+  --server http://127.0.0.1:8080 \
+  --apk /path/to/app.apk \
+  --activities com.example.A1,com.example.A2,com.example.A3,com.example.A4,com.example.A5 \
+  --mode burst --pid <server-pid> > result.json
+```
+
+`--shared-engine-slots 2` 用于测量内存与排队时间的折中；正式比较时保持 APK、Activity、JVM 参数和测试顺序一致。
+
+三 APK 串行的正式矩阵由 `benchmarks/matrix_runner.py` 编排；每个 APK 默认提交五个 Activity worker。启用 systemd cgroup 时，runner 默认要求主机 `/proc/meminfo` 的 `MemAvailable` 至少为 16 GiB（12 GiB 测试上限加 4 GiB 主机保留），否则只写出 `preflight-*.json` 并在启动 JVM 前退出。这样 `pending/blocked` 不会被误记成 APK 分析失败；资源失败后的显式 5→4 retry 仍会在报告中标为 degraded。
+
+正式 benchmark 的 xref 正确性使用 `canonical-semantic-v2`：`class_xrefs`/`method_xrefs` 的 `response_digest` 比较稳定的类/方法身份与集合，生成源码的 `line`/`content` 仍保存在 `wire_response_digest`，位置变化会作为 `wire_location_drift` 单独报告，不会掩盖真实语义 mismatch。r0 golden 仅是基线种子，只有显式 golden + metadata 校验通过的轮次才进入 A/B 汇总。
+
 ### 构建
 
 **Fat JAR**（单文件，所有依赖打包）：
@@ -179,7 +206,7 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 ./gradlew shadowJar
 ```
 
-输出：`build/libs/jadx-server-1.1.0-all.jar`（约 30MB）
+输出：`build/libs/jadx-server-1.2.0-all.jar`（约 30MB）
 
 **分发包**（启动脚本 + 独立依赖 JAR）：
 
@@ -194,9 +221,9 @@ jadx-server 通过标准化的 MCP 协议向外界暴露 jadx 的反编译能力
 **通过 fat JAR**：
 
 ```bash
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.1.0-all.jar
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.1.0-all.jar --xref-mode jadx
-java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.1.0-all.jar --auth-token 'replace-with-a-strong-token'
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.2.0-all.jar
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.2.0-all.jar --xref-mode jadx
+java -Xms256M -Xmx8G -XX:+UseG1GC -jar build/libs/jadx-server-1.2.0-all.jar --auth-token 'replace-with-a-strong-token'
 ```
 
 **通过分发脚本**：
@@ -215,13 +242,13 @@ jadx-server --xref-mode jadx
 如果服务监听在 `0.0.0.0` 或经由反向代理暴露，建议同时设置 `--public-base-url`，这样 `upload_file` 返回的上传地址会是客户端可访问的真实地址，而不是 `0.0.0.0`。
 
 ```bash
-java -jar jadx-server-1.1.0-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-1.2.0-all.jar --listen 127.0.0.1:8080
 ```
 
 如需启用 HTTP 认证，启动时传入 token。未传入或传入空值时保持无需认证模式：
 
 ```bash
-java -jar jadx-server-1.1.0-all.jar \
+java -jar jadx-server-1.2.0-all.jar \
   --listen 127.0.0.1:8080 \
   --auth-token 'replace-with-a-strong-token'
 ```
@@ -245,7 +272,7 @@ java -jar jadx-server-1.1.0-all.jar \
 #### OpenCode（HTTP）
 
 ```bash
-java -jar jadx-server-1.1.0-all.jar --listen 127.0.0.1:8080
+java -jar jadx-server-1.2.0-all.jar --listen 127.0.0.1:8080
 ```
 
 ```json
@@ -268,7 +295,7 @@ Codex 当前支持为流式 HTTP MCP 服务单独绑定 bearer token 环境变�
 
 ```bash
 export JADX_SERVER_AUTH_TOKEN='replace-with-a-strong-token'
-java -jar jadx-server-1.1.0-all.jar \
+java -jar jadx-server-1.2.0-all.jar \
   --listen 127.0.0.1:8080 \
   --auth-token "$JADX_SERVER_AUTH_TOKEN"
 
@@ -311,7 +338,7 @@ with open("your-app.apk", "rb") as file:
 如果服务端使用 `--listen 0.0.0.0:<port>` 部署到远程主机或反向代理后面，请务必额外配置：
 
 ```bash
-java -jar jadx-server-1.1.0-all.jar \
+java -jar jadx-server-1.2.0-all.jar \
   --listen 0.0.0.0:19090 \
   --public-base-url https://jadx.example.com
 ```
@@ -354,6 +381,8 @@ Authorization: Bearer <token>  # 仅在服务端配置了 token 时需要
 | `uploadDir` | `--upload-dir` | `./uploads` | APK/JAR 二进制上传目录 |
 | `toolTimeout` | `--tool-timeout` | `300s`（5 分钟） | MCP 工具执行超时 |
 | `xrefMode` | `--xref-mode` | `JADX` | 交叉引用模式：`TEXT`（字符串匹配）或 `JADX`（字节码分析） |
+| `runtimeMode` | `--runtime-mode` | `CURRENT` | `CURRENT` 保持会话型池；`SHARED` 按 APK 共享只读快照并限制可变 Engine |
+| `sharedEngineSlots` | `--shared-engine-slots` | `1` | `SHARED` 模式下每个 APK 的可变 JADX Engine 数；增大可降低排队但增加内存 |
 
 ### 一次性文件维护命令
 
@@ -376,7 +405,7 @@ jadx-server --upload-dir ./uploads --delete-files-before DAYS
 | 模式 | 方法 | 准确度 | 内存 | 行号信息 |
 |------|------|--------|------|----------|
 | `text` | 在反编译源码上做字符串匹配 | 低（会命中注释、字符串字面量） | 低 | 有 |
-| `jadx` | 字节码级调用图，通过 `JavaClass.getUseIn()` / `JavaMethod.getUseIn()` | 高（精确调用关系） | 中 | 无（line=0） |
+| `jadx` | 字节码级调用图，通过 `JavaClass.getUseIn()` / `JavaMethod.getUseIn()` | 高（精确调用关系） | 中 | 可能返回生成源码的 `line`/`content`；懒加载顺序可能改变位置，正式一致性比较以类/方法身份为准，原始位置保留在 wire digest |
 
 可在 `class_xrefs` / `method_xrefs` 工具上通过 `mode` 参数按请求覆盖。
 

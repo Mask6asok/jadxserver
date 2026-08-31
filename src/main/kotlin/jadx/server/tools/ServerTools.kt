@@ -37,7 +37,8 @@ object ServerTools {
             .param("name", "string", "Filter by basename (substring match)", false)
             .param("md5", "string", "Filter by MD5 hash (exact match)", false)
             .param("type", "string", "Filter by file type extension (e.g. .apk)", false),
-        McpToolDef("list_instances", "List all active engine instances in the pool"),
+        McpToolDef("list_instances", "List active engine instances and per-file queue usage")
+            .param("file_hash", "string", "Optional file hash to filter instances and show per-file usage", false),
         McpToolDef("server_health", "Check server health status including uptime, memory, and instance counts"),
         McpToolDef("tool_catalog", "Search and discover available tools by keyword")
             .param("query", "string", "Optional keyword to search in tool names and descriptions", false),
@@ -135,10 +136,25 @@ object ServerTools {
 
     fun listInstances(args: JsonObject, sessionId: String, state: ServerState): ToolResult {
         val instances = state.enginePool.listInstances()
+        val fileHash = args.getString("file_hash")
+        val filtered = if (fileHash == null) instances else instances.filter { it.fileHash == fileHash }
         return ToolResult.success {
-            put("count", JsonPrimitive(instances.size))
+            put("count", JsonPrimitive(filtered.size))
+            put("queue_depth", JsonPrimitive(state.enginePool.waitingCount()))
+            fileHash?.let {
+                val usage = state.enginePool.fileUsage(it)
+                put("file_usage", buildJsonObject {
+                    put("file_hash", JsonPrimitive(usage.fileHash))
+                    put("instance_count", JsonPrimitive(usage.instanceCount))
+                    put("busy_count", JsonPrimitive(usage.busyCount))
+                    put("idle_count", JsonPrimitive(usage.idleCount))
+                    put("pending_spawn_count", JsonPrimitive(usage.pendingSpawnCount))
+                    put("reserved_count", JsonPrimitive(usage.reservedCount))
+                    put("session_count", JsonPrimitive(usage.sessionCount))
+                })
+            }
             put("instances", buildJsonArray {
-                for (info in instances) {
+                for (info in filtered) {
                     add(buildJsonObject {
                         put("instance_id", JsonPrimitive(info.instanceId))
                         put("file_hash", JsonPrimitive(info.fileHash))
@@ -161,6 +177,9 @@ object ServerTools {
             put("session_count", JsonPrimitive(state.sessionManager.sessionCount()))
             put("file_count", JsonPrimitive(state.fileIndex.entryCount()))
             put("task_count", JsonPrimitive(state.taskManager.taskCount()))
+            put("queue_depth", JsonPrimitive(state.enginePool.waitingCount()))
+            put("runtime_mode", JsonPrimitive(state.config.runtimeMode.name.lowercase()))
+            put("shared_engine_slots", JsonPrimitive(state.config.sharedEngineSlots))
             put("memory", buildJsonObject {
                 put("max_mb", JsonPrimitive(runtime.maxMemory() / (1024 * 1024)))
                 put("total_mb", JsonPrimitive(runtime.totalMemory() / (1024 * 1024)))
