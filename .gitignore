@@ -12,6 +12,8 @@ build.sh
 .DS_Store
 .omo
 server.log
+jadx-server.log
+jadx-server.*.log
 logback-local.xml
 backup
 test
